@@ -200,7 +200,7 @@
 
     stopBtn.onclick = () => {
         isManuallyStopped = true;
-        recognition.stop();
+        recognition.abort(); // 強制停止（onendが呼ばれなくなる）
         startBtn.disabled = false;
         stopBtn.disabled = true;
     };

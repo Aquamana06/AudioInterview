@@ -171,7 +171,7 @@
                 appendMessage(transcript, "user");
 
                 const reply = await sendToGeminiDemo(finalTranscript);
-                appendMessage(reply, "bot");
+                appendMessage(reply, "assistant");
                 speakText(reply);
             } else {
                 interimTranscript = transcript;
@@ -222,7 +222,7 @@
     exportJsonBtn.onclick = () => {
         const messages = Array.from(chatContainer.children).map((node) => {
             return {
-                role: node.classList.contains("user") ? "user" : "bot",
+                role: node.classList.contains("user") ? "user" : "assistant",
                 content: node.textContent,
             };
         });

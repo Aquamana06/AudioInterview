@@ -4,6 +4,7 @@ const clearBtn = document.querySelector("#clear-btn");
 const languageSelect = document.querySelector("#language-select");
 const resultDiv = document.querySelector("#result-div");
 const statusDiv = document.querySelector("#status-div");
+const apiKey = "AIzaSyB0000000000000000000000000000000";
 
 let SpeechRecognition =
   window.SpeechRecognition || window.webkitSpeechRecognition;

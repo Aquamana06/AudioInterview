@@ -1,0 +1,65 @@
+.container {
+    max-width: 800px;
+    margin: 20px auto;
+    padding: 20px;
+}
+
+.controls {
+    margin-bottom: 20px;
+}
+
+.btn {
+    padding: 8px 16px;
+    margin: 0 5px;
+    border: none;
+    border-radius: 4px;
+    background-color: #4CAF50;
+    color: white;
+    cursor: pointer;
+}
+
+.btn:disabled {
+    background-color: #cccccc;
+    cursor: not-allowed;
+}
+
+.btn:hover:not(:disabled) {
+    background-color: #45a049;
+}
+
+#stop-btn {
+    background-color: #f44336;
+}
+
+#stop-btn:hover:not(:disabled) {
+    background-color: #da190b;
+}
+
+#clear-btn {
+    background-color: #2196F3;
+}
+
+#clear-btn:hover:not(:disabled) {
+    background-color: #0b7dda;
+}
+
+#language-select {
+    padding: 8px;
+    margin-right: 10px;
+}
+
+.status {
+    padding: 10px;
+    margin-bottom: 10px;
+    border-radius: 4px;
+    background-color: #f0f0f0;
+    text-align: center;
+}
+
+.result {
+    padding: 20px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    min-height: 200px;
+    background-color: #f9f9f9;
+}

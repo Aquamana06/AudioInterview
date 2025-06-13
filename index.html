@@ -114,6 +114,9 @@
     const chatContainer = document.querySelector("#chat-container");
     const navBar = document.querySelector("nav");
 
+    // Flag to track manual stop
+    let isManuallyStopped = false;
+
     function appendMessage(text, sender) {
         const message = document.createElement("div");
         message.classList.add("chat-bubble", sender);
@@ -123,7 +126,7 @@
         // Save history to localStorage
         const history = Array.from(chatContainer.children).map((node) => {
             return {
-                role: node.classList.contains("user") ? "user" : "assistant",
+                role: node.classList.contains("user") ? "user" : "bot",
                 content: node.textContent,
             };
         });
@@ -150,8 +153,12 @@
         statusDiv.textContent = "待機中";
         navBar.classList.remove("recognizing", "error");
         navBar.classList.add("waiting");
-        startBtn.disabled = false;
-        stopBtn.disabled = true;
+        if (!isManuallyStopped) {
+            recognition.start(); // Auto-restart
+        } else {
+            startBtn.disabled = false;
+            stopBtn.disabled = true;
+        }
     };
 
     recognition.onerror = (event) => {
@@ -171,7 +178,7 @@
                 appendMessage(transcript, "user");
 
                 const reply = await sendToGeminiDemo(finalTranscript);
-                appendMessage(reply, "assistant");
+                appendMessage(reply, "bot");
                 speakText(reply);
             } else {
                 interimTranscript = transcript;
@@ -185,12 +192,14 @@
     };
 
     startBtn.onclick = () => {
+        isManuallyStopped = false;
         recognition.start();
         startBtn.disabled = true;
         stopBtn.disabled = false;
     };
 
     stopBtn.onclick = () => {
+        isManuallyStopped = true;
         recognition.stop();
         startBtn.disabled = false;
         stopBtn.disabled = true;
@@ -222,7 +231,7 @@
     exportJsonBtn.onclick = () => {
         const messages = Array.from(chatContainer.children).map((node) => {
             return {
-                role: node.classList.contains("user") ? "user" : "assistant",
+                role: node.classList.contains("user") ? "user" : "bot",
                 content: node.textContent,
             };
         });

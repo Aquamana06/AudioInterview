@@ -43,7 +43,7 @@ recognition.onresult = async (event) => {
       resultDiv.innerHTML = finalTranscript;
 
       // デモ関数を使用して応答取得・音声出力
-      const reply = await sendToGeminiDemo(finalTranscript);
+      const reply = await sendToInterviewer(finalTranscript);
       speakText(reply);
     } else {
       interimTranscript = transcript;
@@ -77,11 +77,34 @@ clearBtn.onclick = () => {
   resultDiv.innerHTML = "";
 };
 
-async function sendToGeminiDemo(promptText) {
+async function sendToInterviewer(promptText) {
   console.log("受信テキスト:", promptText);
-  response_text = "hello"; // デモ用の固定応答
-  console.log("応答:", response_text);
-  return response_text; // デモ用の固定応答を返す
+  
+  try {
+    const response = await fetch('/audio_interview', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        text: promptText,
+        session_id: 'audio_session_' + Date.now() // セッションIDを生成
+      })
+    });
+    
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+    
+    const data = await response.json();
+    const response_text = data.response;
+    console.log("応答:", response_text);
+    return response_text;
+    
+  } catch (error) {
+    console.error("API呼び出しエラー:", error);
+    return "申し訳ございません。エラーが発生しました。";
+  }
 }
 
 function speakText(text) {

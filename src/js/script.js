@@ -43,7 +43,7 @@ function appendMessage(text, sender) {
     // Save history to localStorage
     const history = Array.from(chatContainer.children).map((node) => {
         return {
-            role: node.classList.contains("user") ? "user" : "bot",
+            role: node.classList.contains("user") ? "user" : "assistant",
             content: node.textContent,
         };
     });
@@ -99,7 +99,7 @@ recognition.onresult = async (event) => {
             clearSilenceTimer(); // 最終結果でタイマーをクリア
 
             const reply = await sendToInterviewer(finalTranscript);
-            appendMessage(reply, "bot");
+            appendMessage(reply, "assistant");
             speakText(reply);
         } else {
             interimTranscript = transcript;
@@ -175,7 +175,7 @@ const exportJsonBtn = document.querySelector("#export-json-btn");
 exportJsonBtn.onclick = () => {
     const messages = Array.from(chatContainer.children).map((node) => {
         return {
-            role: node.classList.contains("user") ? "user" : "bot",
+            role: node.classList.contains("user") ? "user" : "assistant",
             content: node.textContent,
         };
     });
@@ -198,3 +198,10 @@ window.onload = () => {
         history.forEach(({ role, content }) => appendMessage(content, role));
     }
 };
+
+document.addEventListener('click', () => {
+    const utterThis = new SpeechSynthesisUtterance();
+  
+    utterThis.text = '';
+    speechSynthesis.speak(utterThis);
+  });

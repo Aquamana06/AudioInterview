@@ -1,262 +1,53 @@
-<!-- Bootstrap CSS -->
-<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-
-<nav class="navbar navbar-expand-lg sticky-top waiting w-100">
-    <div class="container-fluid">
-        <a class="navbar-brand" href="#">音声チャット</a>
-        <span id="status-div" class="navbar-text position-absolute start-50 translate-middle-x">待機中</span>
-        <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarControls"
-            aria-controls="navbarControls" aria-expanded="false" aria-label="Toggle navigation">
-            <span class="navbar-toggler-icon"></span>
-        </button>
-        <div class="collapse navbar-collapse" id="navbarControls">
-            <ul class="navbar-nav me-auto mb-2 mb-lg-0">
-                <li class="nav-item">
-                    <select id="language-select" class="form-select form-select-sm w-auto">
-                        <option value="ja-JP">🇯🇵日本語</option>
-                        <option value="en-US">🇺🇸English</option>
-                        <option value="de-DE">🇩🇪Deutsch</option>
-                    </select>
-                </li>
-            </ul>
-            <div class="d-flex align-items-center">
-                <div class="btn-group btn-group-sm me-3" role="group" aria-label="音声操作">
-                    <button id="start-btn" class="btn btn-primary"><span>開始</span></button>
-                    <button id="stop-btn" class="btn btn-danger" disabled><span>停止</span></button>
-                </div>
-                <div class="btn-group btn-group-sm me-3" role="group" aria-label="履歴操作">
-                    <button id="clear-btn" class="btn btn-secondary"><span>クリア</span></button>
-                    <button id="export-json-btn" class="btn btn-outline-secondary"><span>履歴を出力</span></button>
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>音声インタビュー</title>
+    <!-- Bootstrap CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <!-- Custom CSS -->
+    <link rel="stylesheet" href="src/css/style.css">
+</head>
+<body>
+    <nav class="navbar navbar-expand-lg sticky-top waiting w-100">
+        <div class="container-fluid">
+            <a class="navbar-brand" href="#">音声チャット</a>
+            <span id="status-div" class="navbar-text position-absolute start-50 translate-middle-x">待機中</span>
+            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarControls"
+                aria-controls="navbarControls" aria-expanded="false" aria-label="Toggle navigation">
+                <span class="navbar-toggler-icon"></span>
+            </button>
+            <div class="collapse navbar-collapse" id="navbarControls">
+                <ul class="navbar-nav me-auto mb-2 mb-lg-0">
+                    <li class="nav-item">
+                        <select id="language-select" class="form-select form-select-sm w-auto">
+                            <option value="ja-JP">🇯🇵日本語</option>
+                            <option value="en-US">🇺🇸English</option>
+                            <option value="de-DE">🇩🇪Deutsch</option>
+                        </select>
+                    </li>
+                </ul>
+                <div class="d-flex align-items-center">
+                    <div class="btn-group btn-group-sm me-3" role="group" aria-label="音声操作">
+                        <button id="start-btn" class="btn btn-primary"><span>開始</span></button>
+                        <button id="stop-btn" class="btn btn-danger" disabled><span>停止</span></button>
+                    </div>
+                    <div class="btn-group btn-group-sm me-3" role="group" aria-label="履歴操作">
+                        <button id="clear-btn" class="btn btn-secondary"><span>クリア</span></button>
+                        <button id="export-json-btn" class="btn btn-outline-secondary"><span>履歴を出力</span></button>
+                    </div>
                 </div>
             </div>
         </div>
+    </nav>
+    <div class="container">
+        <div id="chat-container" class="chat-container"></div>
     </div>
-</nav>
-<div class="container">
-    <div id="chat-container" class="chat-container"></div>
-</div>
 
-<style>
-    .navbar {
-        backdrop-filter: blur(10px) saturate(150%);
-        -webkit-backdrop-filter: blur(10px);
-    }
-
-    .waiting {
-        background-color: rgba(180, 200, 240, 0.8);
-    }
-
-    .recognizing {
-        background-color: rgba(200, 255, 200, 0.8);
-    }
-
-    .error {
-        background-color: rgba(255, 200, 200, 0.8);
-    }
-
-    .chat-container {
-        position: relative;
-        padding: 20px;
-        padding-top: 80px;
-        /* ヘッダー分の余白を追加 */
-        overflow-y: auto;
-        display: flex;
-        flex-direction: column;
-        background: rgba(255, 255, 255, 0.1);
-        backdrop-filter: blur(10px);
-        -webkit-backdrop-filter: blur(10px);
-    }
-
-    .chat-bubble {
-        padding: 10px 15px;
-        margin: 10px;
-        border-radius: 10px;
-        max-width: 70%;
-        word-wrap: break-word;
-    }
-
-    .user {
-        background-color: #dcf8c6;
-        align-self: flex-start;
-        text-align: left;
-        margin-right: auto;
-    }
-
-    .bot {
-        background-color: #f1f0f0;
-        align-self: flex-end;
-        text-align: right;
-        margin-left: auto;
-    }
-
-    .status {
-        padding: 10px;
-        margin-bottom: 10px;
-        border-radius: 4px;
-        background-color: #f0f0f0;
-        text-align: center;
-    }
-
-    @media (min-width: 992px) {
-        .navbar-toggler {
-            display: none !important;
-        }
-    }
-</style>
-
-<script>
-    const startBtn = document.querySelector("#start-btn");
-    const stopBtn = document.querySelector("#stop-btn");
-    const clearBtn = document.querySelector("#clear-btn");
-    const languageSelect = document.querySelector("#language-select");
-    const resultDiv = document.querySelector("#result-div");
-    const statusDiv = document.querySelector("#status-div");
-    const chatContainer = document.querySelector("#chat-container");
-    const navBar = document.querySelector("nav");
-
-    // Flag to track manual stop
-    let isManuallyStopped = false;
-
-    function appendMessage(text, sender) {
-        const message = document.createElement("div");
-        message.classList.add("chat-bubble", sender);
-        message.textContent = text;
-        chatContainer.appendChild(message);
-        chatContainer.scrollTop = chatContainer.scrollHeight;
-        // Save history to localStorage
-        const history = Array.from(chatContainer.children).map((node) => {
-            return {
-                role: node.classList.contains("user") ? "user" : "bot",
-                content: node.textContent,
-            };
-        });
-        localStorage.setItem("chatHistory", JSON.stringify(history));
-    }
-
-    let SpeechRecognition =
-        window.SpeechRecognition || window.webkitSpeechRecognition;
-    let recognition = new SpeechRecognition();
-
-    recognition.lang = languageSelect.value;
-    recognition.interimResults = true;
-    recognition.continuous = true;
-
-    let finalTranscript = "";
-
-    recognition.onstart = () => {
-        statusDiv.textContent = "音声認識中...";
-        navBar.classList.remove("waiting", "error");
-        navBar.classList.add("recognizing");
-    };
-
-    recognition.onend = () => {
-        statusDiv.textContent = "待機中";
-        navBar.classList.remove("recognizing", "error");
-        navBar.classList.add("waiting");
-        if (!isManuallyStopped) {
-            recognition.start(); // Auto-restart
-        } else {
-            startBtn.disabled = false;
-            stopBtn.disabled = true;
-        }
-    };
-
-    recognition.onerror = (event) => {
-        statusDiv.textContent = `エラー: ${event.error}`;
-        navBar.classList.remove("recognizing", "waiting");
-        navBar.classList.add("error");
-        startBtn.disabled = false;
-        stopBtn.disabled = true;
-    };
-
-    recognition.onresult = async (event) => {
-        let interimTranscript = "";
-        for (let i = event.resultIndex; i < event.results.length; i++) {
-            let transcript = event.results[i][0].transcript;
-            if (event.results[i].isFinal) {
-                finalTranscript += transcript;
-                appendMessage(transcript, "user");
-
-                const reply = await sendToGeminiDemo(finalTranscript);
-                appendMessage(reply, "bot");
-                speakText(reply);
-            } else {
-                interimTranscript = transcript;
-                // 削除: resultDiv.innerHTML = ...
-            }
-        }
-    };
-
-    languageSelect.onchange = () => {
-        recognition.lang = languageSelect.value;
-    };
-
-    startBtn.onclick = () => {
-        isManuallyStopped = false;
-        recognition.start();
-        startBtn.disabled = true;
-        stopBtn.disabled = false;
-    };
-
-    stopBtn.onclick = () => {
-        isManuallyStopped = true;
-        recognition.abort(); // 強制停止（onendが呼ばれなくなる）
-        startBtn.disabled = false;
-        stopBtn.disabled = true;
-    };
-
-    clearBtn.onclick = () => {
-        finalTranscript = "";
-        chatContainer.innerHTML = "";
-        localStorage.removeItem("chatHistory");
-        console.log("履歴をクリアしました");
-    };
-
-    async function sendToGeminiDemo(promptText) {
-        console.log("受信テキスト:", promptText);
-        response_text = "hello"; // デモ用の固定応答
-        console.log("応答:", response_text);
-        return response_text; // デモ用の固定応答を返す
-    }
-
-    function speakText(text) {
-        const utterance = new SpeechSynthesisUtterance(text);
-        utterance.lang = languageSelect.value;
-        speechSynthesis.speak(utterance);
-    }
-
-    // JSONエクスポート機能
-    const exportJsonBtn = document.querySelector("#export-json-btn");
-
-    exportJsonBtn.onclick = () => {
-        const messages = Array.from(chatContainer.children).map((node) => {
-            return {
-                role: node.classList.contains("user") ? "user" : "bot",
-                content: node.textContent,
-            };
-        });
-        const blob = new Blob([JSON.stringify(messages, null, 2)], {
-            type: "application/json",
-        });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = "chat_history.json";
-        a.click();
-        URL.revokeObjectURL(url);
-    };
-
-    // 履歴の復元: ローカルストレージから
-    window.onload = () => {
-        const saved = localStorage.getItem("chatHistory");
-        if (saved) {
-            const history = JSON.parse(saved);
-            history.forEach(({ role, content }) => appendMessage(content, role));
-        }
-    };
-
-</script>
-
-<!-- Bootstrap JS Bundle -->
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
-</script>
+    <!-- Bootstrap JS Bundle -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <!-- Custom JavaScript -->
+    <script src="src/js/script.js"></script>
+</body>
+</html>

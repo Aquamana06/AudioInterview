@@ -63,3 +63,61 @@
     min-height: 200px;
     background-color: #f9f9f9;
 }
+
+.navbar {
+    backdrop-filter: blur(10px) saturate(150%);
+    -webkit-backdrop-filter: blur(10px);
+}
+
+.waiting {
+    background-color: rgba(180, 200, 240, 0.8);
+}
+
+.recognizing {
+    background-color: rgba(200, 255, 200, 0.8);
+}
+
+.error {
+    background-color: rgba(255, 200, 200, 0.8);
+}
+
+.chat-container {
+    position: relative;
+    padding: 20px;
+    padding-top: 80px;
+    /* ヘッダー分の余白を追加 */
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    background: rgba(255, 255, 255, 0.1);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+}
+
+.chat-bubble {
+    padding: 10px 15px;
+    margin: 10px;
+    border-radius: 10px;
+    max-width: 70%;
+    word-wrap: break-word;
+}
+
+.user {
+    background-color: #dcf8c6;
+    align-self: flex-start;
+    text-align: left;
+    margin-right: auto;
+}
+
+.bot {
+    background-color: #f1f0f0;
+    align-self: flex-end;
+    text-align: right;
+    margin-left: auto;
+}
+
+@media (min-width: 992px) {
+    .navbar-toggler {
+        display: none !important;
+    }
+}

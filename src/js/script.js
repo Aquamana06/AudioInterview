@@ -6,7 +6,7 @@ const resultDiv = document.querySelector("#result-div");
 const statusDiv = document.querySelector("#status-div");
 const chatContainer = document.querySelector("#chat-container");
 const navBar = document.querySelector("nav");
-const ENDPOINT_HOST_URL = "https://flask-gpt4o-1jkj.onrender.com"; // APIのホストURL
+const ENDPOINT_HOST_URL = "https://resilience-interviewer.onrender.com"; // APIのホストURL
 // Flag to track manual stop
 let isManuallyStopped = false;
 

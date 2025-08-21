@@ -75,6 +75,7 @@ recognition.onend = () => {
     clearSilenceTimer(); // タイマーをクリア
     if (!isManuallyStopped) {
         recognition.start(); // Auto-restart
+        // 自動再開始中は停止ボタンを有効のまま維持
     } else {
         startBtn.disabled = false;
         stopBtn.disabled = true;
@@ -86,8 +87,11 @@ recognition.onerror = (event) => {
     navBar.classList.remove("recognizing", "waiting");
     navBar.classList.add("error");
     clearSilenceTimer(); // タイマーをクリア
-    startBtn.disabled = false;
-    stopBtn.disabled = true;
+    // エラー時も手動停止でない限りボタンの状態を維持
+    if (isManuallyStopped) {
+        startBtn.disabled = false;
+        stopBtn.disabled = true;
+    }
 };
 
 recognition.onresult = async (event) => {

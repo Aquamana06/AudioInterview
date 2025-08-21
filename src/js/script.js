@@ -96,12 +96,16 @@ recognition.onresult = async (event) => {
         let transcript = event.results[i][0].transcript;
         if (event.results[i].isFinal) {
             finalTranscript += transcript;
-            appendMessage(transcript, "user");
-            clearSilenceTimer(); // 最終結果でタイマーをクリア
+            
+            // 空文字や空白のみの場合はスキップ
+            if (transcript.trim().length > 0) {
+                appendMessage(transcript, "user");
+                clearSilenceTimer(); // 最終結果でタイマーをクリア
 
-            const reply = await sendToInterviewer(finalTranscript);
-            appendMessage(reply, "assistant");
-            speakText(reply);
+                const reply = await sendToInterviewer(finalTranscript);
+                appendMessage(reply, "assistant");
+                speakText(reply);
+            }
         } else {
             interimTranscript = transcript;
             resetSilenceTimer(); // 中間結果でタイマーをリセット

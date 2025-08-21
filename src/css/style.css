@@ -100,7 +100,9 @@
     border-radius: 10px;
     max-width: 70%;
     word-wrap: break-word;
+    position: relative;
 }
+
 
 .user {
     background-color: #dcf8c6;
@@ -109,7 +111,7 @@
     margin-right: auto;
 }
 
-.bot {
+.assistant {
     background-color: #f1f0f0;
     align-self: flex-end;
     text-align: right;

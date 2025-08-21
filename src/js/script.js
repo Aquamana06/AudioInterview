@@ -117,6 +117,14 @@ startBtn.onclick = () => {
     recognition.start();
     startBtn.disabled = true;
     stopBtn.disabled = false;
+    
+    // 初回開始時の挨拶メッセージ（履歴がない場合のみ）
+    const saved = localStorage.getItem("chatHistory");
+    if (!saved) {
+        const initMessage = "本日はどのような思いや考えを持って日々の業務に取り組んでいるのかお聞かせいただけると幸いです。よろしくお願いします";
+        appendMessage(initMessage, "assistant");
+        speakText(initMessage);
+    }
 };
 
 stopBtn.onclick = () => {
@@ -196,11 +204,6 @@ window.onload = () => {
     if (saved) {
         const history = JSON.parse(saved);
         history.forEach(({ role, content }) => appendMessage(content, role));
-    } else {
-        // 初回起動時の挨拶メッセージ
-        const initMessage = "本日はどのような思いや考えを持って日々の業務に取り組んでいるのかお聞かせいただけると幸いです。よろしくお願いします";
-        appendMessage(initMessage, "assistant");
-        speakText(initMessage);
     }
 };
 

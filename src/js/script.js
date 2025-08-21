@@ -108,7 +108,10 @@ recognition.onresult = async (event) => {
             }
         } else {
             interimTranscript = transcript;
-            resetSilenceTimer(); // 中間結果でタイマーをリセット
+            // 実際に音声がある場合のみタイマーをリセット
+            if (transcript.trim().length > 0) {
+                resetSilenceTimer(); // 中間結果でタイマーをリセット
+            }
         }
     }
 };

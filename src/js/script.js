@@ -16,6 +16,7 @@ let currentSessionId = 'audio_session_' + Date.now();
 // 音声認識のタイマー設定
 let silenceTimer = null;
 const SILENCE_TIMEOUT = 3000; // 3秒
+let hasSpokenOnce = false; // ユーザーが一度でも話したかのフラグ
 
 function resetSilenceTimer() {
     if (silenceTimer) {

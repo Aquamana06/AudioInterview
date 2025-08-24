@@ -133,7 +133,7 @@ startBtn.onclick = () => {
     // 初回開始時の挨拶メッセージ（履歴がない場合のみ）
     const saved = localStorage.getItem("chatHistory");
     if (!saved) {
-        const initMessage = "本日はどのような思いや考えを持って日々の業務に取り組んでいるのかお聞かせいただけると幸いです。よろしくお願いします";
+        const initMessage = "こんにちは。お時間をいただきありがとうございます。";
         appendMessage(initMessage, "assistant");
         speakText(initMessage);
     }

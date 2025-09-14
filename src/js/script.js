@@ -6,9 +6,12 @@ const resultDiv = document.querySelector("#result-div");
 const statusDiv = document.querySelector("#status-div");
 const chatContainer = document.querySelector("#chat-container");
 const navBar = document.querySelector("nav");
+const userIdDisplay = document.querySelector("#user-id-display");
 const ENDPOINT_HOST_URL = "https://resilience-interviewer.onrender.com"; // APIのホストURL
 // Flag to track manual stop
 let isManuallyStopped = false;
+// Flag to track if we're waiting for server response
+let isWaitingForResponse = false;
 
 // セッションIDを固定
 let currentSessionId = "audio_session_" + Date.now();
@@ -74,7 +77,7 @@ recognition.onend = () => {
   navBar.classList.remove("recognizing", "error");
   navBar.classList.add("waiting");
   clearSilenceTimer(); // タイマーをクリア
-  if (!isManuallyStopped) {
+  if (!isManuallyStopped && !isWaitingForResponse) {
     recognition.start(); // Auto-restart
     // 自動再開始中は停止ボタンを有効のまま維持
   } else {
@@ -107,9 +110,19 @@ recognition.onresult = async (event) => {
         appendMessage(transcript, "user");
         clearSilenceTimer(); // 最終結果でタイマーをクリア
 
+        // サーバーレスポンス待ち中は音声認識を停止
+        isWaitingForResponse = true;
+        recognition.stop();
+
         const reply = await sendToInterviewer(finalTranscript);
         appendMessage(reply, "assistant");
         speakText(reply);
+
+        // レスポンス完了後、音声認識を再開
+        isWaitingForResponse = false;
+        if (!isManuallyStopped) {
+          recognition.start();
+        }
       }
     } else {
       interimTranscript = transcript;
@@ -214,6 +227,11 @@ exportJsonBtn.onclick = () => {
   URL.revokeObjectURL(url);
 };
 
+// Update user ID display
+function updateUserIdDisplay() {
+  userIdDisplay.textContent = `user_id: ${user_id}`;
+}
+
 // 履歴の復元: ローカルストレージから
 window.onload = () => {
   const saved = localStorage.getItem("chatHistory");
@@ -229,6 +247,9 @@ window.onload = () => {
   if (localStorage.getItem("user_id")) {
     user_id = localStorage.getItem("user_id");
   }
+
+  // Display user ID
+  updateUserIdDisplay();
 };
 
 document.addEventListener("click", () => {

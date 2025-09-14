@@ -14,13 +14,37 @@ let isManuallyStopped = false;
 let isWaitingForResponse = false;
 
 // セッションIDを固定
-let currentSessionId = "audio_session_" + Date.now();
-let user_id = "user_" + Math.floor(Math.random() * 1000000);
+let currentSessionId = "";
+let user_id = "";
 
 // 音声認識のタイマー設定
 let silenceTimer = null;
 const SILENCE_TIMEOUT = 3000; // 3秒
 let hasSpokenOnce = false; // ユーザーが一度でも話したかのフラグ
+let isRecognizing = false; // 音声認識中かどうかのフラグ
+
+// 音声認識の開始/停止を切り替える関数
+function toggle_recog(shouldStart) {
+  if (shouldStart && !isRecognizing) {
+    // 音声認識を開始
+    isRecognizing = true;
+    recognition.start();
+    startBtn.disabled = true;
+    stopBtn.disabled = false;
+    statusDiv.textContent = "音声認識中...";
+    navBar.classList.remove("waiting", "error");
+    navBar.classList.add("recognizing");
+  } else if (!shouldStart && isRecognizing) {
+    // 音声認識を停止
+    isRecognizing = false;
+    recognition.stop();
+    startBtn.disabled = false;
+    stopBtn.disabled = true;
+    statusDiv.textContent = "待機中";
+    navBar.classList.remove("recognizing", "error");
+    navBar.classList.add("waiting");
+  }
+}
 
 function resetSilenceTimer() {
   if (silenceTimer) {
@@ -28,7 +52,7 @@ function resetSilenceTimer() {
   }
   silenceTimer = setTimeout(() => {
     console.log("3秒以上の沈黙を検出、音声認識を終了");
-    recognition.stop();
+    toggle_recog(false);
   }, SILENCE_TIMEOUT);
 }
 
@@ -69,23 +93,19 @@ recognition.continuous = true;
 let finalTranscript = "";
 
 recognition.onstart = () => {
-  statusDiv.textContent = "音声認識中...";
-  navBar.classList.remove("waiting", "error");
-  navBar.classList.add("recognizing");
+  isRecognizing = true;
   clearSilenceTimer(); // タイマーをクリア
 };
 
 recognition.onend = () => {
-  statusDiv.textContent = "待機中";
-  navBar.classList.remove("recognizing", "error");
-  navBar.classList.add("waiting");
+  isRecognizing = false;
   clearSilenceTimer(); // タイマーをクリア
   if (!isManuallyStopped && !isWaitingForResponse) {
-    recognition.start(); // Auto-restart
-    startBtn.disabled = true;
-    stopBtn.disabled = false;
-    // 自動再開始中は停止ボタンを有効のまま維持
+    toggle_recog(true); // Auto-restart
   } else {
+    statusDiv.textContent = "待機中";
+    navBar.classList.remove("recognizing", "error");
+    navBar.classList.add("waiting");
     startBtn.disabled = false;
     stopBtn.disabled = true;
   }
@@ -95,6 +115,7 @@ recognition.onerror = (event) => {
   statusDiv.textContent = `エラー: ${event.error}`;
   navBar.classList.remove("recognizing", "waiting");
   navBar.classList.add("error");
+  isRecognizing = false;
   clearSilenceTimer(); // タイマーをクリア
   // エラー時も手動停止でない限りボタンの状態を維持
   if (isManuallyStopped) {
@@ -104,7 +125,6 @@ recognition.onerror = (event) => {
 };
 
 recognition.onresult = async (event) => {
-  let interimTranscript = "";
   for (let i = event.resultIndex; i < event.results.length; i++) {
     let transcript = event.results[i][0].transcript;
     if (event.results[i].isFinal) {
@@ -117,7 +137,7 @@ recognition.onresult = async (event) => {
 
         // サーバーレスポンス待ち中は音声認識を停止
         isWaitingForResponse = true;
-        recognition.stop();
+        toggle_recog(false);
 
         const reply = await sendToInterviewer(finalTranscript);
         appendMessage(reply, "assistant");
@@ -126,11 +146,10 @@ recognition.onresult = async (event) => {
         // レスポンス完了後、音声認識を再開
         isWaitingForResponse = false;
         if (!isManuallyStopped) {
-          recognition.start();
+          toggle_recog(true);
         }
       }
     } else {
-      interimTranscript = transcript;
       // 実際に音声がある場合のみタイマーをリセット
       if (transcript.trim().length > 0) {
         resetSilenceTimer(); // 中間結果でタイマーをリセット
@@ -145,9 +164,7 @@ languageSelect.onchange = () => {
 
 startBtn.onclick = () => {
   isManuallyStopped = false;
-  recognition.start();
-  startBtn.disabled = true;
-  stopBtn.disabled = false;
+  toggle_recog(true);
 
   // 初回開始時の挨拶メッセージ（履歴がない場合のみ）
   const saved = localStorage.getItem("chatHistory");
@@ -160,9 +177,7 @@ startBtn.onclick = () => {
 
 stopBtn.onclick = () => {
   isManuallyStopped = true;
-  recognition.abort(); // 強制停止（onendが呼ばれなくなる）
-  startBtn.disabled = false;
-  stopBtn.disabled = true;
+  toggle_recog(false);
 };
 
 clearBtn.onclick = () => {
@@ -247,10 +262,16 @@ window.onload = () => {
 
   if (localStorage.getItem("sessionId")) {
     currentSessionId = localStorage.getItem("sessionId");
+  } else {
+    currentSessionId = "audio_session_" + Date.now();
+    localStorage.setItem("sessionId", currentSessionId);
   }
 
   if (localStorage.getItem("user_id")) {
     user_id = localStorage.getItem("user_id");
+  } else {
+    user_id = "user_" + Math.floor(Math.random() * 1000000);
+    localStorage.setItem("user_id", user_id);
   }
 
   // Display user ID

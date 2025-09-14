@@ -44,7 +44,10 @@ function appendMessage(text, sender) {
   message.classList.add("chat-bubble", sender);
   message.textContent = text;
   chatContainer.appendChild(message);
-  chatContainer.scrollTop = chatContainer.scrollHeight;
+
+  // 自動で最下部までスクロール（スムーズに）
+  message.scrollIntoView({ behavior: "smooth", block: "end" });
+
   // Save history to localStorage
   const history = Array.from(chatContainer.children).map((node) => {
     return {
@@ -79,6 +82,8 @@ recognition.onend = () => {
   clearSilenceTimer(); // タイマーをクリア
   if (!isManuallyStopped && !isWaitingForResponse) {
     recognition.start(); // Auto-restart
+    startBtn.disabled = true;
+    stopBtn.disabled = false;
     // 自動再開始中は停止ボタンを有効のまま維持
   } else {
     startBtn.disabled = false;

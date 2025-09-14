@@ -44,8 +44,9 @@
 }
 
 #language-select {
-    padding: 8px;
+    padding: 8px 12px;
     margin-right: 10px;
+    min-width: 130px;
 }
 
 .status {

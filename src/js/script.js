@@ -150,6 +150,7 @@ clearBtn.onclick = () => {
     finalTranscript = "";
     chatContainer.innerHTML = "";
     localStorage.removeItem("chatHistory");
+    currentSessionId = 'audio_session_' + Date.now();
     console.log("履歴をクリアしました");
 };
 

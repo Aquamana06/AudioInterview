@@ -170,7 +170,7 @@ async function sendToInterviewer(promptText) {
         });
         
         if (!response.ok) {
-            throw new Error(`HTTP error! status: ${response.status}`);
+            throw new Error(`HTTP error! status: ${response.status}, response: ${response.statusText}`);
         }
         
         const data = await response.json();

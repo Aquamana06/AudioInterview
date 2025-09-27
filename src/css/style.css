@@ -136,3 +136,53 @@
     border-radius: 3px;
     z-index: 1000;
 }
+
+#userRegistrationModal .modal-content {
+    border-radius: 20px;
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.15);
+    border: none;
+}
+
+#userRegistrationModal .modal-header {
+    padding: 30px 30px 10px 30px;
+}
+
+#userRegistrationModal .modal-title {
+    font-weight: 600;
+    font-size: 24px;
+    color: #333;
+}
+
+#userRegistrationModal .modal-body {
+    padding: 20px 40px;
+}
+
+#userRegistrationModal .form-control {
+    border-radius: 12px;
+    border: 2px solid #e0e0e0;
+    padding: 12px 20px;
+    font-size: 16px;
+    transition: all 0.3s ease;
+}
+
+#userRegistrationModal .form-control:focus {
+    border-color: #0d6efd;
+    box-shadow: 0 0 0 0.2rem rgba(13, 110, 253, 0.15);
+}
+
+#userRegistrationModal .modal-footer {
+    padding: 10px 40px 30px 40px;
+}
+
+#userRegistrationModal .btn-primary {
+    border-radius: 12px;
+    font-weight: 600;
+    padding: 12px 40px;
+    transition: all 0.3s ease;
+    border: none;
+}
+
+#userRegistrationModal .btn-primary:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 5px 15px rgba(13, 110, 253, 0.3);
+}

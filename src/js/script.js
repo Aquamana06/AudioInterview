@@ -247,13 +247,42 @@ exportJsonBtn.onclick = () => {
   URL.revokeObjectURL(url);
 };
 
-// Update user ID display
+async function checkUserName(userId) {
+  try {
+    const response = await fetch(`${ENDPOINT_HOST_URL}/check_user_name?user_id=${userId}`);
+    const data = await response.json();
+    return data;
+  } catch (error) {
+    console.error("ユーザー名チェックエラー:", error);
+    return { exists: false };
+  }
+}
+
+async function registerUserName(userId, userName) {
+  try {
+    const response = await fetch(`${ENDPOINT_HOST_URL}/register_user_name`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        user_id: userId,
+        user_name: userName,
+      }),
+    });
+    const data = await response.json();
+    return data;
+  } catch (error) {
+    console.error("ユーザー名登録エラー:", error);
+    return { error: "登録に失敗しました" };
+  }
+}
+
 function updateUserIdDisplay() {
   userIdDisplay.textContent = `user_id: ${user_id}`;
 }
 
-// 履歴の復元: ローカルストレージから
-window.onload = () => {
+async function initializeApp() {
   const saved = localStorage.getItem("chatHistory");
   if (saved) {
     const history = JSON.parse(saved);
@@ -274,9 +303,43 @@ window.onload = () => {
     localStorage.setItem("user_id", user_id);
   }
 
-  // Display user ID
   updateUserIdDisplay();
-};
+
+  const userCheck = await checkUserName(user_id);
+
+  if (!userCheck.exists) {
+    const modal = new bootstrap.Modal(document.getElementById('userRegistrationModal'));
+    modal.show();
+
+    document.getElementById('registerBtn').addEventListener('click', async () => {
+      const userName = document.getElementById('userName').value.trim();
+      const nameError = document.getElementById('nameError');
+
+      if (!userName) {
+        nameError.classList.remove('d-none');
+        return;
+      }
+
+      nameError.classList.add('d-none');
+
+      const result = await registerUserName(user_id, userName);
+
+      if (result.error) {
+        alert('登録に失敗しました。もう一度お試しください。');
+      } else {
+        modal.hide();
+      }
+    });
+
+    document.getElementById('userName').addEventListener('keypress', (e) => {
+      if (e.key === 'Enter') {
+        document.getElementById('registerBtn').click();
+      }
+    });
+  }
+}
+
+window.onload = initializeApp;
 
 document.addEventListener("click", () => {
   const utterThis = new SpeechSynthesisUtterance();

@@ -47,6 +47,27 @@
 
     <div id="user-id-display" class="user-id-display"></div>
 
+    <!-- User Registration Modal -->
+    <div class="modal fade" id="userRegistrationModal" data-bs-backdrop="static" data-bs-keyboard="false" tabindex="-1">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content">
+                <div class="modal-header border-0">
+                    <h5 class="modal-title w-100 text-center">ユーザー登録</h5>
+                </div>
+                <div class="modal-body p-4">
+                    <p class="text-center text-muted mb-4">はじめに、お名前を教えてください</p>
+                    <div class="mb-3">
+                        <input type="text" class="form-control form-control-lg" id="userName" placeholder="お名前を入力" autocomplete="off">
+                        <div id="nameError" class="text-danger mt-2 d-none">お名前を入力してください</div>
+                    </div>
+                </div>
+                <div class="modal-footer border-0 justify-content-center">
+                    <button type="button" class="btn btn-primary btn-lg px-5" id="registerBtn">登録</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Bootstrap JS Bundle -->
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <!-- Custom JavaScript -->

@@ -270,7 +270,7 @@ window.onload = () => {
   if (localStorage.getItem("user_id")) {
     user_id = localStorage.getItem("user_id");
   } else {
-    user_id = "user_" + Math.floor(Math.random() * 1000000);
+    user_id = Math.floor(Math.random() * 1000000);
     localStorage.setItem("user_id", user_id);
   }
 

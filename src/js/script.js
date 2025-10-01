@@ -331,11 +331,21 @@ async function initializeApp() {
 
   if (!userCheck.exists) {
     const modal = new bootstrap.Modal(document.getElementById('userRegistrationModal'));
+    const registerBtn = document.getElementById('registerBtn');
+    const userNameInput = document.getElementById('userName');
+    const nameError = document.getElementById('nameError');
+
+    // 既存のイベントリスナーをクリアするため、クローンして置き換え
+    const newRegisterBtn = registerBtn.cloneNode(true);
+    registerBtn.parentNode.replaceChild(newRegisterBtn, registerBtn);
+
+    const newUserNameInput = userNameInput.cloneNode(true);
+    userNameInput.parentNode.replaceChild(newUserNameInput, userNameInput);
+
     modal.show();
 
-    document.getElementById('registerBtn').addEventListener('click', async () => {
-      const userName = document.getElementById('userName').value.trim();
-      const nameError = document.getElementById('nameError');
+    newRegisterBtn.addEventListener('click', async () => {
+      const userName = newUserNameInput.value.trim();
 
       if (!userName) {
         nameError.textContent = 'お名前を入力してください';
@@ -347,10 +357,7 @@ async function initializeApp() {
 
       const result = await registerUserName(user_id, userName);
 
-      if (result.error) {
-        nameError.textContent = '登録に失敗しました。もう一度お試しください。';
-        nameError.classList.remove('d-none');
-      } else if (!result.success) {
+      if (result.error || result.success === false) {
         nameError.textContent = '登録に失敗しました。もう一度お試しください。';
         nameError.classList.remove('d-none');
       } else {
@@ -358,9 +365,9 @@ async function initializeApp() {
       }
     });
 
-    document.getElementById('userName').addEventListener('keypress', (e) => {
+    newUserNameInput.addEventListener('keypress', (e) => {
       if (e.key === 'Enter') {
-        document.getElementById('registerBtn').click();
+        newRegisterBtn.click();
       }
     });
   }

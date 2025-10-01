@@ -205,9 +205,9 @@ async function sendToInterviewer(promptText) {
     });
 
     if (!response.ok) {
-      throw new Error(
-        `HTTP error! status: ${response.status}, response: ${response.statusText}`
-      );
+      const errorMessage = `通信エラーが発生しました (ステータス: ${response.status})`;
+      console.error(errorMessage);
+      return errorMessage;
     }
 
     const data = await response.json();
@@ -215,8 +215,9 @@ async function sendToInterviewer(promptText) {
     console.log("応答:", response_text);
     return response_text;
   } catch (error) {
+    const errorMessage = `エラーが発生しました: ${error.message}`;
     console.error("API呼び出しエラー:", error);
-    return "申し訳ございません。エラーが発生しました。";
+    return errorMessage;
   }
 }
 
@@ -245,6 +246,27 @@ exportJsonBtn.onclick = () => {
   a.download = "chat_history.json";
   a.click();
   URL.revokeObjectURL(url);
+};
+
+// ログアウト機能
+const logoutBtn = document.querySelector("#logout-btn");
+
+logoutBtn.onclick = () => {
+  if (confirm('ログアウトしますか？チャット履歴も削除されます。')) {
+    // 音声認識を停止
+    if (isRecognizing) {
+      isManuallyStopped = true;
+      toggle_recog(false);
+    }
+
+    // すべてのデータをクリア
+    localStorage.removeItem("chatHistory");
+    localStorage.removeItem("sessionId");
+    localStorage.removeItem("user_id");
+
+    // ページをリロードして初期状態に戻す
+    window.location.reload();
+  }
 };
 
 async function checkUserName(userId) {
@@ -316,6 +338,7 @@ async function initializeApp() {
       const nameError = document.getElementById('nameError');
 
       if (!userName) {
+        nameError.textContent = 'お名前を入力してください';
         nameError.classList.remove('d-none');
         return;
       }
@@ -325,7 +348,11 @@ async function initializeApp() {
       const result = await registerUserName(user_id, userName);
 
       if (result.error) {
-        alert('登録に失敗しました。もう一度お試しください。');
+        nameError.textContent = '登録に失敗しました。もう一度お試しください。';
+        nameError.classList.remove('d-none');
+      } else if (!result.success) {
+        nameError.textContent = '登録に失敗しました。もう一度お試しください。';
+        nameError.classList.remove('d-none');
       } else {
         modal.hide();
       }

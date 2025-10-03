@@ -90,8 +90,6 @@ recognition.lang = languageSelect.value;
 recognition.interimResults = true;
 recognition.continuous = true;
 
-let finalTranscript = "";
-
 recognition.onstart = () => {
   isRecognizing = true;
   clearSilenceTimer(); // タイマーをクリア
@@ -128,7 +126,6 @@ recognition.onresult = async (event) => {
   for (let i = event.resultIndex; i < event.results.length; i++) {
     let transcript = event.results[i][0].transcript;
     if (event.results[i].isFinal) {
-      finalTranscript += transcript;
 
       // 空文字や空白のみの場合はスキップ
       if (transcript.trim().length > 0) {
@@ -139,7 +136,7 @@ recognition.onresult = async (event) => {
         isWaitingForResponse = true;
         toggle_recog(false);
 
-        const reply = await sendToInterviewer(finalTranscript);
+        const reply = await sendToInterviewer(transcript);
         appendMessage(reply, "assistant");
         speakText(reply);
 
@@ -181,7 +178,6 @@ stopBtn.onclick = () => {
 };
 
 clearBtn.onclick = () => {
-  finalTranscript = "";
   chatContainer.innerHTML = "";
   localStorage.removeItem("chatHistory");
   currentSessionId = "audio_session_" + Date.now();

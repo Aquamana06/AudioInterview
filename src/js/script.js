@@ -7,7 +7,7 @@ const statusDiv = document.querySelector("#status-div");
 const chatContainer = document.querySelector("#chat-container");
 const navBar = document.querySelector("nav");
 const userIdDisplay = document.querySelector("#user-id-display");
-const ENDPOINT_HOST_URL = "https://resilience-interviewer.onrender.com"; // APIのホストURL
+const ENDPOINT_HOST_URL = "https://resilience-interviewer-ulck.onrender.com"; // APIのホストURL
 // Flag to track manual stop
 let isManuallyStopped = false;
 // Flag to track if we're waiting for server response
@@ -90,8 +90,6 @@ recognition.lang = languageSelect.value;
 recognition.interimResults = true;
 recognition.continuous = true;
 
-let finalTranscript = "";
-
 recognition.onstart = () => {
   isRecognizing = true;
   clearSilenceTimer(); // タイマーをクリア
@@ -128,7 +126,6 @@ recognition.onresult = async (event) => {
   for (let i = event.resultIndex; i < event.results.length; i++) {
     let transcript = event.results[i][0].transcript;
     if (event.results[i].isFinal) {
-      finalTranscript += transcript;
 
       // 空文字や空白のみの場合はスキップ
       if (transcript.trim().length > 0) {
@@ -139,7 +136,7 @@ recognition.onresult = async (event) => {
         isWaitingForResponse = true;
         toggle_recog(false);
 
-        const reply = await sendToInterviewer(finalTranscript);
+        const reply = await sendToInterviewer(transcript);
         appendMessage(reply, "assistant");
         speakText(reply);
 
@@ -181,7 +178,6 @@ stopBtn.onclick = () => {
 };
 
 clearBtn.onclick = () => {
-  finalTranscript = "";
   chatContainer.innerHTML = "";
   localStorage.removeItem("chatHistory");
   currentSessionId = "audio_session_" + Date.now();

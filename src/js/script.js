@@ -17,11 +17,10 @@ let isWaitingForResponse = false;
 let currentSessionId = "";
 let user_id = "";
 
-// 音声認識のタイマー設定
-let silenceTimer = null;
-const SILENCE_TIMEOUT = 3000; // 3秒
+// 音声認識の状態管理
 let hasSpokenOnce = false; // ユーザーが一度でも話したかのフラグ
 let isRecognizing = false; // 音声認識中かどうかのフラグ
+let accumulatedText = ""; // 蓄積された音声テキスト
 
 // 音声認識の開始/停止を切り替える関数
 function toggle_recog(shouldStart) {
@@ -46,21 +45,17 @@ function toggle_recog(shouldStart) {
   }
 }
 
-function resetSilenceTimer() {
-  if (silenceTimer) {
-    clearTimeout(silenceTimer);
-  }
-  silenceTimer = setTimeout(() => {
-    console.log("3秒以上の沈黙を検出、音声認識を終了");
-    toggle_recog(false);
-  }, SILENCE_TIMEOUT);
+// トリガーワード検出関数（表記ゆれに対応）
+function checkForTriggerWord(text) {
+  // 「以上です」「以上」「いじょうです」「いじょう」を末尾で検出
+  const triggerPattern = /(以上|いじょう)(です)?$/;
+  return triggerPattern.test(text);
 }
 
-function clearSilenceTimer() {
-  if (silenceTimer) {
-    clearTimeout(silenceTimer);
-    silenceTimer = null;
-  }
+// トリガーワードを除外してテキストを抽出
+function extractContentWithoutTrigger(text) {
+  const triggerPattern = /(以上|いじょう)(です)?$/;
+  return text.replace(triggerPattern, "").trim();
 }
 
 function appendMessage(text, sender) {
@@ -92,12 +87,11 @@ recognition.continuous = true;
 
 recognition.onstart = () => {
   isRecognizing = true;
-  clearSilenceTimer(); // タイマーをクリア
+  accumulatedText = ""; // テキストの蓄積をリセット
 };
 
 recognition.onend = () => {
   isRecognizing = false;
-  clearSilenceTimer(); // タイマーをクリア
   if (!isManuallyStopped && !isWaitingForResponse) {
     toggle_recog(true); // Auto-restart
   } else {
@@ -114,7 +108,6 @@ recognition.onerror = (event) => {
   navBar.classList.remove("recognizing", "waiting");
   navBar.classList.add("error");
   isRecognizing = false;
-  clearSilenceTimer(); // タイマーをクリア
   // エラー時も手動停止でない限りボタンの状態を維持
   if (isManuallyStopped) {
     startBtn.disabled = false;
@@ -126,30 +119,39 @@ recognition.onresult = async (event) => {
   for (let i = event.resultIndex; i < event.results.length; i++) {
     let transcript = event.results[i][0].transcript;
     if (event.results[i].isFinal) {
-
       // 空文字や空白のみの場合はスキップ
       if (transcript.trim().length > 0) {
-        appendMessage(transcript, "user");
-        clearSilenceTimer(); // 最終結果でタイマーをクリア
+        // テキストを蓄積（スペースで区切って追加）
+        accumulatedText += (accumulatedText ? " " : "") + transcript;
 
-        // サーバーレスポンス待ち中は音声認識を停止
-        isWaitingForResponse = true;
-        toggle_recog(false);
+        // トリガーワードを検出
+        if (checkForTriggerWord(accumulatedText)) {
+          // トリガーワードを除外したテキストを取得
+          const contentToSend = extractContentWithoutTrigger(accumulatedText);
 
-        const reply = await sendToInterviewer(transcript);
-        appendMessage(reply, "assistant");
-        speakText(reply);
+          // 送信するテキストが空でない場合のみ処理
+          if (contentToSend.trim().length > 0) {
+            // チャットに表示（トリガーワードなし）
+            appendMessage(contentToSend, "user");
 
-        // レスポンス完了後、音声認識を再開
-        isWaitingForResponse = false;
-        if (!isManuallyStopped) {
-          toggle_recog(true);
+            // サーバーレスポンス待ち中は音声認識を停止
+            isWaitingForResponse = true;
+            toggle_recog(false);
+
+            const reply = await sendToInterviewer(contentToSend);
+            appendMessage(reply, "assistant");
+            speakText(reply);
+
+            // レスポンス完了後、音声認識を再開
+            isWaitingForResponse = false;
+            if (!isManuallyStopped) {
+              toggle_recog(true);
+            }
+          }
+
+          // 蓄積テキストをリセット
+          accumulatedText = "";
         }
-      }
-    } else {
-      // 実際に音声がある場合のみタイマーをリセット
-      if (transcript.trim().length > 0) {
-        resetSilenceTimer(); // 中間結果でタイマーをリセット
       }
     }
   }
@@ -323,49 +325,54 @@ async function initializeApp() {
 
   updateUserIdDisplay();
 
-  const userCheck = await checkUserName(user_id);
+  // テスト環境用：ユーザー登録をスキップ
+  const SKIP_USER_REGISTRATION = false; // テスト時はtrue、本番環境ではfalseに設定
 
-  if (!userCheck.exists) {
-    const modal = new bootstrap.Modal(document.getElementById('userRegistrationModal'));
-    const registerBtn = document.getElementById('registerBtn');
-    const userNameInput = document.getElementById('userName');
-    const nameError = document.getElementById('nameError');
+  if (!SKIP_USER_REGISTRATION) {
+    const userCheck = await checkUserName(user_id);
 
-    // 既存のイベントリスナーをクリアするため、クローンして置き換え
-    const newRegisterBtn = registerBtn.cloneNode(true);
-    registerBtn.parentNode.replaceChild(newRegisterBtn, registerBtn);
+    if (!userCheck.exists) {
+      const modal = new bootstrap.Modal(document.getElementById('userRegistrationModal'));
+      const registerBtn = document.getElementById('registerBtn');
+      const userNameInput = document.getElementById('userName');
+      const nameError = document.getElementById('nameError');
 
-    const newUserNameInput = userNameInput.cloneNode(true);
-    userNameInput.parentNode.replaceChild(newUserNameInput, userNameInput);
+      // 既存のイベントリスナーをクリアするため、クローンして置き換え
+      const newRegisterBtn = registerBtn.cloneNode(true);
+      registerBtn.parentNode.replaceChild(newRegisterBtn, registerBtn);
 
-    modal.show();
+      const newUserNameInput = userNameInput.cloneNode(true);
+      userNameInput.parentNode.replaceChild(newUserNameInput, userNameInput);
 
-    newRegisterBtn.addEventListener('click', async () => {
-      const userName = newUserNameInput.value.trim();
+      modal.show();
 
-      if (!userName) {
-        nameError.textContent = 'お名前を入力してください';
-        nameError.classList.remove('d-none');
-        return;
-      }
+      newRegisterBtn.addEventListener('click', async () => {
+        const userName = newUserNameInput.value.trim();
 
-      nameError.classList.add('d-none');
+        if (!userName) {
+          nameError.textContent = 'お名前を入力してください';
+          nameError.classList.remove('d-none');
+          return;
+        }
 
-      const result = await registerUserName(user_id, userName);
+        nameError.classList.add('d-none');
 
-      if (result.error || result.success === false) {
-        nameError.textContent = '登録に失敗しました。もう一度お試しください。';
-        nameError.classList.remove('d-none');
-      } else {
-        modal.hide();
-      }
-    });
+        const result = await registerUserName(user_id, userName);
 
-    newUserNameInput.addEventListener('keypress', (e) => {
-      if (e.key === 'Enter') {
-        newRegisterBtn.click();
-      }
-    });
+        if (result.error || result.success === false) {
+          nameError.textContent = '登録に失敗しました。もう一度お試しください。';
+          nameError.classList.remove('d-none');
+        } else {
+          modal.hide();
+        }
+      });
+
+      newUserNameInput.addEventListener('keypress', (e) => {
+        if (e.key === 'Enter') {
+          newRegisterBtn.click();
+        }
+      });
+    }
   }
 }
 

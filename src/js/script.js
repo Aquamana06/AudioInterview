@@ -140,9 +140,11 @@ recognition.onresult = async (event) => {
 
             const reply = await sendToInterviewer(contentToSend);
             appendMessage(reply, "assistant");
-            speakText(reply);
 
-            // レスポンス完了後、音声認識を再開
+            // AI応答の音声合成が完了してから音声認識を再開
+            await speakText(reply);
+
+            // 音声合成完了後、音声認識を再開
             isWaitingForResponse = false;
             if (!isManuallyStopped) {
               toggle_recog(true);
@@ -161,17 +163,20 @@ languageSelect.onchange = () => {
   recognition.lang = languageSelect.value;
 };
 
-startBtn.onclick = () => {
+startBtn.onclick = async () => {
   isManuallyStopped = false;
-  toggle_recog(true);
 
   // 初回開始時の挨拶メッセージ（履歴がない場合のみ）
   const saved = localStorage.getItem("chatHistory");
   if (!saved) {
     const initMessage = "先ほどはどんな業務をしていたのですか？";
     appendMessage(initMessage, "assistant");
-    speakText(initMessage);
+    // AI挨拶の音声合成が完了してから音声認識を開始
+    await speakText(initMessage);
   }
+
+  // 音声合成完了後（または履歴がある場合はすぐに）音声認識を開始
+  toggle_recog(true);
 };
 
 stopBtn.onclick = () => {
@@ -220,9 +225,14 @@ async function sendToInterviewer(promptText) {
 }
 
 function speakText(text) {
-  const utterance = new SpeechSynthesisUtterance(text);
-  utterance.lang = languageSelect.value;
-  speechSynthesis.speak(utterance);
+  return new Promise((resolve) => {
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.lang = languageSelect.value;
+    utterance.onend = () => {
+      resolve();
+    };
+    speechSynthesis.speak(utterance);
+  });
 }
 
 // JSONエクスポート機能

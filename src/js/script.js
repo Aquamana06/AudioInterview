@@ -45,16 +45,16 @@ function toggle_recog(shouldStart) {
   }
 }
 
-// トリガーワード検出関数（表記ゆれに対応）
+// トリガーワード検出関数
 function checkForTriggerWord(text) {
-  // 「以上です」「以上」「いじょうです」「いじょう」を末尾で検出
-  const triggerPattern = /(以上|いじょう)(です)?$/;
+  // 「どうぞ」を末尾で検出
+  const triggerPattern = /どうぞ$/;
   return triggerPattern.test(text);
 }
 
 // トリガーワードを除外してテキストを抽出
 function extractContentWithoutTrigger(text) {
-  const triggerPattern = /(以上|いじょう)(です)?$/;
+  const triggerPattern = /どうぞ$/;
   return text.replace(triggerPattern, "").trim();
 }
 

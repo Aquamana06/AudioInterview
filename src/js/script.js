@@ -21,6 +21,7 @@ let user_id = "";
 let hasSpokenOnce = false; // ユーザーが一度でも話したかのフラグ
 let isRecognizing = false; // 音声認識中かどうかのフラグ
 let accumulatedText = ""; // 蓄積された音声テキスト
+let currentUserBubble = null; // リアルタイム表示用の現在のチャットバブル
 
 // 音声認識の開始/停止を切り替える関数
 function toggle_recog(shouldStart) {
@@ -88,6 +89,7 @@ recognition.continuous = true;
 recognition.onstart = () => {
   isRecognizing = true;
   accumulatedText = ""; // テキストの蓄積をリセット
+  currentUserBubble = null; // バブルをリセット
 };
 
 recognition.onend = () => {
@@ -116,46 +118,71 @@ recognition.onerror = (event) => {
 };
 
 recognition.onresult = async (event) => {
+  let interimTranscript = ""; // 暫定的なテキスト
+
   for (let i = event.resultIndex; i < event.results.length; i++) {
     let transcript = event.results[i][0].transcript;
+
     if (event.results[i].isFinal) {
-      // 空文字や空白のみの場合はスキップ
+      // 確定したテキストを蓄積
       if (transcript.trim().length > 0) {
-        // テキストを蓄積（スペースで区切って追加）
         accumulatedText += (accumulatedText ? " " : "") + transcript;
+      }
+    } else {
+      // 暫定的なテキストを追加
+      interimTranscript += transcript;
+    }
+  }
 
-        // トリガーワードを検出
-        if (checkForTriggerWord(accumulatedText)) {
-          // トリガーワードを除外したテキストを取得
-          const contentToSend = extractContentWithoutTrigger(accumulatedText);
+  // リアルタイム表示用のテキスト（確定テキスト + 暫定テキスト）
+  const displayText = accumulatedText + (interimTranscript ? (accumulatedText ? " " : "") + interimTranscript : "");
 
-          // 送信するテキストが空でない場合のみ処理
-          if (contentToSend.trim().length > 0) {
-            // チャットに表示（トリガーワードなし）
-            appendMessage(contentToSend, "user");
+  // 表示するテキストがある場合、バブルを更新または作成
+  if (displayText.trim().length > 0) {
+    if (!currentUserBubble) {
+      // 新しいバブルを作成
+      currentUserBubble = document.createElement("div");
+      currentUserBubble.classList.add("chat-bubble", "user");
+      chatContainer.appendChild(currentUserBubble);
+    }
+    // バブルの内容を更新
+    currentUserBubble.textContent = displayText;
+    // 自動で最下部までスクロール
+    currentUserBubble.scrollIntoView({ behavior: "smooth", block: "end" });
+  }
 
-            // サーバーレスポンス待ち中は音声認識を停止
-            isWaitingForResponse = true;
-            toggle_recog(false);
+  // トリガーワードを検出（確定したテキストのみでチェック）
+  if (accumulatedText.trim().length > 0 && checkForTriggerWord(accumulatedText)) {
+    // トリガーワードを除外したテキストを取得
+    const contentToSend = extractContentWithoutTrigger(accumulatedText);
 
-            const reply = await sendToInterviewer(contentToSend);
-            appendMessage(reply, "assistant");
+    // 送信するテキストが空でない場合のみ処理
+    if (contentToSend.trim().length > 0) {
+      // バブルの内容を確定（トリガーワードなし）
+      if (currentUserBubble) {
+        currentUserBubble.textContent = contentToSend;
+      }
+      currentUserBubble = null; // バブルをリセット
 
-            // AI応答の音声合成が完了してから音声認識を再開
-            await speakText(reply);
+      // サーバーレスポンス待ち中は音声認識を停止
+      isWaitingForResponse = true;
+      toggle_recog(false);
 
-            // 音声合成完了後、音声認識を再開
-            isWaitingForResponse = false;
-            if (!isManuallyStopped) {
-              toggle_recog(true);
-            }
-          }
+      const reply = await sendToInterviewer(contentToSend);
+      appendMessage(reply, "assistant");
 
-          // 蓄積テキストをリセット
-          accumulatedText = "";
-        }
+      // AI応答の音声合成が完了してから音声認識を再開
+      await speakText(reply);
+
+      // 音声合成完了後、音声認識を再開
+      isWaitingForResponse = false;
+      if (!isManuallyStopped) {
+        toggle_recog(true);
       }
     }
+
+    // 蓄積テキストをリセット
+    accumulatedText = "";
   }
 };
 

@@ -1,0 +1,13 @@
+{
+  "extends": "./tsconfig.node.json",
+  "compilerOptions": {
+    "allowImportingTsExtensions": false,
+    "lib": ["ES2023", "DOM"],
+    "module": "NodeNext",
+    "noEmit": false,
+    "outDir": "./.terminal-interview-build",
+    "rootDir": ".",
+    "types": ["node", "./worker-configuration.d.ts"]
+  },
+  "include": ["scripts/terminal-interview.ts", "worker/agent.ts", "worker/openai.ts", "worker/types.ts"]
+}

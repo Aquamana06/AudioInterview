@@ -39,7 +39,7 @@ npx wrangler d1 migrations apply RI-db --local
 ### 5. 開発サーバーを起動
 
 ```bash
-npm run dev -- --host 127.0.0.1
+c
 ```
 
 起動後、ブラウザで次を開きます。

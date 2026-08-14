@@ -12,7 +12,8 @@ flowchart LR
 
   worker --> d1[(Cloudflare D1<br/>accounts<br/>auth_sessions<br/>interview_sessions<br/>messages<br/>interview_states)]
   worker --> openaiText[OpenAI Responses API<br/>抽出・応答生成]
-  worker --> openaiAudio[OpenAI Audio Transcription API<br/>音声文字起こし]
+  browser --> localAI[Local GPU Backend<br/>faster-whisper large-v3<br/>専門用語補正<br/>Semantic Masking]
+  localAI --> browser
 
   browser --> speech[Browser APIs<br/>SpeechRecognition<br/>MediaRecorder<br/>SpeechSynthesis<br/>BarcodeDetector]
 ```
@@ -44,8 +45,8 @@ sequenceDiagram
 sequenceDiagram
   participant U as オペレータ
   participant B as Browser
+  participant L as Local GPU Backend
   participant W as Cloudflare Worker
-  participant A as OpenAI Audio Transcription API
   participant O as OpenAI Responses API
   participant D as D1
 
@@ -55,11 +56,12 @@ sequenceDiagram
   U->>B: 回答を発話
   U->>B: "over" と発話
   B->>B: 終了語検知・録音停止
-  B->>W: POST /api/speech/transcribe
-  W->>A: 音声ファイルを送信
-  A-->>W: 文字起こし結果
-  W-->>B: テキスト
-  B->>W: POST /api/sessions/:id/messages
+  B->>L: 録音チャンク（約3秒ごと）
+  L-->>B: Whisper逐次文字起こし・専門用語補正
+  B->>L: 録音終了後の音声
+  L->>L: 確定文字起こし・専門用語補正・Semantic Masking
+  L-->>B: 表示用テキスト + マスク済みテキスト
+  B->>W: POST /api/sessions/:id/messages（マスク済みのみ）
   W->>D: 発話・状態を保存
   W->>O: 抽出・応答生成
   O-->>W: AI応答

@@ -8,6 +8,10 @@ pnpm-debug.log*
 lerna-debug.log*
 
 node_modules
+.venv
+.npm-cache
+__pycache__
+*.py[cod]
 dist
 dist-ssr
 .terminal-interview-build

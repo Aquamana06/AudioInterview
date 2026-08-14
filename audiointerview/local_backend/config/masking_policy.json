@@ -1,0 +1,40 @@
+{
+  "categories": {
+    "tank": {
+      "placeholderPrefix": "TANK",
+      "label": "そのタンク"
+    },
+    "level_sensor": {
+      "placeholderPrefix": "LEVEL_SENSOR",
+      "label": "その液面計"
+    },
+    "reactor": {
+      "placeholderPrefix": "REACTOR",
+      "label": "その反応器"
+    },
+    "catalyst": {
+      "placeholderPrefix": "CATALYST",
+      "label": "その触媒"
+    },
+    "product": {
+      "placeholderPrefix": "PRODUCT",
+      "label": "その製品"
+    },
+    "purification_process": {
+      "placeholderPrefix": "PURIFICATION_PROCESS",
+      "label": "その精製工程"
+    },
+    "chemical": {
+      "placeholderPrefix": "CHEMICAL",
+      "label": "その薬品"
+    },
+    "process": {
+      "placeholderPrefix": "PROCESS",
+      "label": "その工程"
+    },
+    "equipment": {
+      "placeholderPrefix": "EQUIPMENT",
+      "label": "その設備"
+    }
+  }
+}

@@ -16,7 +16,8 @@ Cloudflare Pages / Workers / D1 を用いて、フロントエンド、API、デ
 - Backend: Cloudflare Workers + TypeScript
 - Database: Cloudflare D1
 - Hosting: Cloudflare Pages / Workers Assets
-- AI: OpenAI Responses API, OpenAI audio transcription API
+- AI: OpenAI Responses API（マスク済みテキストのみ）
+- Local AI: faster-whisper large-v3（GPU）、専門用語補正、Semantic Masking
 - Local/Deploy: Wrangler
 
 ## 4. 主要機能
@@ -49,8 +50,10 @@ Cloudflare Pages / Workers / D1 を用いて、フロントエンド、API、デ
 - ブラウザの音声認識で `hey whisper` 相当の起動語を検知する。
 - 起動後、MediaRecorderで音声を録音する。
 - `over` 相当の終了語を検知したら録音を終了する。
-- 録音ファイルをWorker経由でOpenAI audio transcription APIに送信し、文字起こしする。
-- 文字起こし結果を通常のユーザー回答としてインタビュー処理に渡す。
+- 録音中は一定間隔でローカルfaster-whisper large-v3に渡し、文字起こしプレビューを更新する。
+- 録音終了後、音声をローカルfaster-whisperで確定文字起こしする。
+- ローカル境界内で専門用語補正とSemantic Maskingを行い、マスク済みテキストだけをWorkerへ送る。
+- テキスト入力も同じローカル補正・マスク処理を通してからWorkerへ送る。
 - 音声モードではAI応答をブラウザのSpeechSynthesisで読み上げる。
 - テキスト入力欄にフォーカスした場合は音声モードを停止する。
 
@@ -119,7 +122,8 @@ Cloudflare Pages / Workers / D1 を用いて、フロントエンド、API、デ
 - `/api/sessions/:id/end`: セッション終了
 - `/api/admin/accounts`: 管理者によるアカウント一覧取得・発行
 - `/api/admin/histories`: 管理者による履歴一覧取得
-- `/api/speech/transcribe`: 音声ファイル文字起こし
+- Local `POST /transcribe`: faster-whisper文字起こし、専門用語補正、Semantic Masking
+- Local `POST /mask-text`: テキスト入力の専門用語補正、Semantic Masking
 
 ## 7. 非機能要件
 
@@ -133,7 +137,7 @@ Cloudflare Pages / Workers / D1 を用いて、フロントエンド、API、デ
 ## 8. 初期仕様からの主な変更点
 
 - バックエンドはPythonではなくTypeScript Workersで実装する。
-- 音声認識はRealtime API常時接続ではなく、ブラウザ録音後にOpenAI transcription APIへ送信する方式とする。
+- 音声認識はローカルfaster-whisper large-v3を使用し、録音中の逐次プレビューと録音後の確定文字起こしを行う。
 - `hey whisper` / `over` の検知はブラウザ音声認識で行う。
 - インタビューアルゴリズムはTypeScriptの `worker/agent.ts` に統合する。
 - 抽出項目に `personal_meanings` を追加し、インタビュー深さを最大6段階で扱う。

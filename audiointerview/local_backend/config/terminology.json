@@ -1,0 +1,44 @@
+[
+  {
+    "term": "TK-301",
+    "category": "tank",
+    "reading": "ティーケーサンマルイチ",
+    "aliases": ["TK301", "ティーケー301", "ティーケー三百一"],
+    "common_asr_errors": ["低系301", "TK三百一"]
+  },
+  {
+    "term": "LT-301",
+    "category": "level_sensor",
+    "reading": "エルティーサンマルイチ",
+    "aliases": ["LT301", "エルティー301", "エルティー三百一"],
+    "common_asr_errors": ["LT三百一"]
+  },
+  {
+    "term": "RX-201",
+    "category": "reactor",
+    "reading": "アールエックスニーマルイチ",
+    "aliases": ["RX201", "アールエックス201", "アールエックス二百一"],
+    "common_asr_errors": ["RX二百一"]
+  },
+  {
+    "term": "特殊触媒ABC",
+    "category": "catalyst",
+    "reading": "トクシュショクバイエービーシー",
+    "aliases": ["特殊触媒エービーシー"],
+    "common_asr_errors": []
+  },
+  {
+    "term": "製品X",
+    "category": "product",
+    "reading": "セイヒンエックス",
+    "aliases": ["製品エックス"],
+    "common_asr_errors": []
+  },
+  {
+    "term": "第3精製工程",
+    "category": "purification_process",
+    "reading": "ダイサンセイセイコウテイ",
+    "aliases": ["第三精製工程", "第3精製プロセス"],
+    "common_asr_errors": []
+  }
+]

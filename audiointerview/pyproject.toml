@@ -1,0 +1,29 @@
+[project]
+name = "audiointerview-local-backend"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.116.0",
+  "faster-whisper>=1.1.0",
+  "python-multipart>=0.0.20",
+  "uvicorn[standard]>=0.35.0",
+]
+
+[project.optional-dependencies]
+gpu = [
+  "nvidia-cublas-cu12>=12.0.0",
+  "nvidia-cudnn-cu12>=9.0.0",
+]
+
+[project.scripts]
+audiointerview-local-backend = "local_backend.main:run"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["local_backend"]
+
+[tool.uv]
+package = true

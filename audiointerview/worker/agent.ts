@@ -1,4 +1,9 @@
 import { emptyExtraction, openaiText } from './openai.js';
+import {
+  assistantPlaceholderInstruction,
+  placeholderCorrectionInstruction,
+  sanitizeAssistantText,
+} from './privacy/outputFilter.js';
 import type { AgentResult, ConversationGuide, ExtractedInfo, InterviewState, Language, MessageRow, RuntimeEnv } from './types.js';
 
 export const endings: Record<Language, string> = {
@@ -48,22 +53,26 @@ export async function runInterviewTurn(
   chatHistory: MessageRow[],
   language: Language,
 ): Promise<AgentResult> {
-  const extracted = await extractInfo(env, userInput, state, chatHistory);
+  const correctedMaskedText = await correctMaskedTranscript(env, userInput);
+  const gptUserInput = correctedMaskedText || userInput;
+  const extracted = await extractInfo(env, gptUserInput, state, chatHistory);
   const nextState = updateStateFromExtraction(structuredClone(state), extracted);
   const guide = buildConversationGuide(nextState, extracted);
 
   if (extracted.wants_to_stop || guide.should_end) {
+    const text = sanitizeAssistantText(endings[language]);
     return {
-      text: endings[language],
+      text,
       state: nextState,
       stateLabel: 'end',
       extracted,
       guide,
+      correctedMaskedText: gptUserInput,
     };
   }
 
-  const generated = await generateUtterance(env, guide, nextState, userInput, chatHistory);
-  const localized = await localizeUtterance(env, generated, language);
+  const generated = await generateUtterance(env, guide, nextState, gptUserInput, chatHistory);
+  const localized = sanitizeAssistantText(await localizeUtterance(env, generated, language));
   updateAfterUtterance(nextState, localized);
 
   return {
@@ -72,7 +81,23 @@ export async function runInterviewTurn(
     stateLabel: 'running',
     extracted,
     guide,
+    correctedMaskedText: gptUserInput,
   };
+}
+
+export async function correctMaskedTranscript(env: RuntimeEnv, maskedText: string) {
+  const prompt = `あなたは音声認識テキストの校正器です。
+入力はSemantic Masking済みのテキストだけです。
+化学プラントの一般的な文脈を参考に、助詞、文法、一般語の明らかなASR誤認識だけを最小限修正してください。
+意味を追加しないでください。
+出力は修正後テキストのみです。${placeholderCorrectionInstruction()}
+
+【入力】
+${maskedText}`;
+
+  const corrected = (await safeOpenaiText(env, prompt)).trim();
+  if (!corrected) return maskedText;
+  return corrected;
 }
 
 async function extractInfo(env: RuntimeEnv, userInput: string, state: InterviewState, chatHistory: MessageRow[]) {
@@ -261,8 +286,8 @@ function buildConversationGuide(state: InterviewState, info: ExtractedInfo): Con
       should_ask_question: false,
       should_end: false,
       guidance:
-        '質問が続いている。仕事に対する姿勢を知れるようなその業務やその人にまつわる軽い質問または確認をする対象業務について分かってきたことを短く言語化して確認する',
-      priorities: ['理解を返す(？で終わってもいい)', '業務や人柄への関心を自然に示す'],
+        '質問が2回続いている。このターンでは新しい質問や確認を一切せず、対象業務について分かってきたことと、その人の仕事ぶりへの理解を短い平叙文で返す。疑問符で終えない。回答を求めない。',
+      priorities: ['ここまでの理解を短く返す', '業務や人柄への関心を自然に示す', '質問しない', '疑問文にしない'],
     });
   }
 
@@ -291,7 +316,7 @@ function buildConversationGuide(state: InterviewState, info: ExtractedInfo): Con
       should_ask_question: true,
       should_end: false,
       guidance:
-        '対象業務の流れ・場面・仕事の進め方の理解がまだ浅い。ただし『どんな工夫』『具体的に』とは聞かず、相手の直前発話に乗って自然に業務の様子を聞く。',
+        '対象業務の流れ・場面・仕事の進め方の理解がまだ浅い。ただし『どんな工夫』『具体的に』とは聞かず、相手の直前発話に乗って自然に業務の様子を聞く。CDM／ACTAも参考に．',
       priorities: ['対象業務の様子を理解する', '相手の直前発話に乗る', '質問攻めにしない'],
       dice_hint: 'D',
     });
@@ -365,6 +390,7 @@ async function generateUtterance(
 - avoid_reasking に含まれることは絶対に聞き直さない。
 - use_as_known に含まれることは既知の前提として使う。
 - 対象業務から勝手に離れない。
+${assistantPlaceholderInstruction()}
 
 DICEの使い方:
 dice_hint がある場合だけ、裏側で軽く参考にする。
@@ -388,7 +414,34 @@ ${latestAnswer}
 次の自然な発話を生成してください。`;
 
   const text = await safeOpenaiText(env, prompt);
-  return text.trim() || fallbackQuestion(state);
+  const generated = sanitizeAssistantText(text.trim() || fallbackQuestion(state));
+  return enforceQuestionPolicy(env, generated, guide);
+}
+
+async function enforceQuestionPolicy(env: RuntimeEnv, text: string, guide: ConversationGuide) {
+  if (guide.should_ask_question || !isQuestionText(text)) return text;
+
+  const rewritten = sanitizeAssistantText((await safeOpenaiText(
+    env,
+    `次のインタビュアー発話を、意味を増減させず、相手への理解を返す短い平叙文に書き直してください。
+質問、確認、依頼、疑問符、回答を促す表現は禁止です。出力は書き直した発話だけにしてください。
+
+【発話】
+${text}`,
+  )).trim());
+
+  if (rewritten && !isQuestionText(rewritten)) return rewritten;
+  return statementFallback(text);
+}
+
+function isQuestionText(text: string) {
+  return /[?？]/.test(text) || /(?:ですか|ますか|でしょうか|だろうか|教えてください|聞かせてください)[。.!！\s]*$/.test(text.trim());
+}
+
+function statementFallback(text: string) {
+  const firstStatement = text.split(/[?？]/, 1)[0].trim();
+  if (firstStatement && !isQuestionText(firstStatement)) return `${firstStatement.replace(/[。.!！]+$/, '')}。`;
+  return 'ここまでのお話から、状況を確かめながら丁寧に業務を進めていることが伝わってきます。';
 }
 
 async function localizeUtterance(env: RuntimeEnv, text: string, language: Language) {
@@ -495,7 +548,8 @@ function fallbackExtract(text: string): ExtractedInfo {
 
 function fallbackQuestion(state: InterviewState) {
   if (!state.target_work) return '先ほどの業務について、その時の状況も含めてもう少し聞かせてください。';
-  if (state.task_coverage < 0.7) return `${state.target_work} の場面では、普段どんな流れで進めていましたか？`;
-  if (state.task_depth < 5) return `その ${state.target_work} で大事にしている判断や考え方はありますか？`;
-  return `${state.target_work} で想定外のことが起きた時は、どのように受け止めていますか？`;
+  const target = sanitizeAssistantText(state.target_work);
+  if (state.task_coverage < 0.7) return `${target} の場面では、普段どんな流れで進めていましたか？`;
+  if (state.task_depth < 5) return `その ${target} で大事にしている判断や考え方はありますか？`;
+  return `${target} で想定外のことが起きた時は、どのように受け止めていますか？`;
 }

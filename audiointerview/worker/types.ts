@@ -6,7 +6,7 @@ export interface RuntimeEnv {
   RI_db: D1Database;
   OPENAI_API_KEY?: string;
   OPENAI_TEXT_MODEL?: string;
-  OPENAI_TRANSCRIBE_MODEL?: string;
+  LOCAL_INTERVIEW_BACKEND_URL?: string;
 }
 
 export interface Account {
@@ -111,4 +111,18 @@ export interface AgentResult {
   stateLabel: 'running' | 'end';
   extracted: ExtractedInfo;
   guide: ConversationGuide;
+  correctedMaskedText?: string;
 }
+
+export type TranscriptionResult = {
+  rawText: string;
+  normalizedText: string;
+  maskedText: string;
+  correctedMaskedText?: string;
+};
+
+export type MaskMapping = {
+  placeholder: string;
+  original: string;
+  category: string;
+};

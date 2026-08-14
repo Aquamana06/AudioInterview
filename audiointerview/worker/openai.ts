@@ -115,31 +115,6 @@ export async function openaiStatus(env: RuntimeEnv) {
   return {
     configured: Boolean(env.OPENAI_API_KEY),
     textModel: env.OPENAI_TEXT_MODEL ?? 'gpt-5.5',
-    transcriptionModel: env.OPENAI_TRANSCRIBE_MODEL ?? 'whisper-1',
+    transcriptionModel: 'local faster-whisper large-v3',
   };
-}
-
-export async function transcribeAudio(env: RuntimeEnv, file: File, language?: string) {
-  if (!env.OPENAI_API_KEY) throw new Error('OPENAI_API_KEY is not configured');
-
-  const form = new FormData();
-  form.append('file', file);
-  form.append('model', env.OPENAI_TRANSCRIBE_MODEL ?? 'whisper-1');
-  if (language) form.append('language', language);
-
-  const response = await fetch('https://api.openai.com/v1/audio/transcriptions', {
-    method: 'POST',
-    headers: {
-      authorization: `Bearer ${env.OPENAI_API_KEY}`,
-    },
-    body: form,
-  });
-
-  if (!response.ok) {
-    const body = await response.text();
-    throw new Error(`OpenAI transcription failed: ${response.status} ${body}`);
-  }
-
-  const payload = (await response.json()) as { text?: string };
-  return payload.text ?? '';
 }

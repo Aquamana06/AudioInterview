@@ -5,10 +5,14 @@ import './App.css'
 type Language = 'ja' | 'en' | 'de'
 type Role = 'admin' | 'operator'
 type Account = { id: string; role: Role; displayName: string }
-type Session = { id: string; account_id: string; title: string; language: Language; status: 'running' | 'ended'; started_at: string; updated_at: string }
+type Session = { id: string; account_id: string; title: string; language: Language; status: 'running' | 'ended'; phase: 'profile' | 'interview'; profile_turn_count: number; started_at: string; updated_at: string }
 type Message = { id: string; role: 'system' | 'user'; content: string; inputMode: 'text' | 'voice' | 'system'; createdAt: string; updatedAt: string }
 type InterviewState = { task_coverage: number; task_depth: number; irregular_coverage: number; turn_count: number }
-type SessionPayload = { session: Session; messages: Message[]; state: InterviewState; stateLabel: 'running' | 'end' }
+type WorkerProfile = { workerId: string; role: string | null; department: string | null; totalExperienceYears: number | null; currentRoleExperienceYears: number | null; assignedProcesses: string[]; assignedEquipment: string[]; responsibilities: string[]; qualifications: string[]; expertise: string[]; educationExperience: string[]; updatedAt: string | null }
+type LongTermMemory = { id: string; type: string; content: string; sourceSessionId: string | null; createdAt: string }
+type SessionSummary = { sessionId: string; summary: string; topics: string[]; unresolvedTopics: string[] }
+type WorkerContext = { profile: WorkerProfile; memories: LongTermMemory[]; recentSessionSummaries: SessionSummary[] }
+type SessionPayload = { session: Session; messages: Message[]; state: InterviewState; stateLabel: 'running' | 'end'; workerProfile: WorkerProfile; longTermMemories: LongTermMemory[]; sessionSummary: SessionSummary | null }
 type SpeechState = 'ready' | 'wake' | 'recording' | 'transcribing' | 'thinking' | 'speaking' | 'ended' | 'error'
 
 type SpeechRecognitionEventLike = { results: ArrayLike<{ isFinal: boolean; 0: { transcript: string } }>; resultIndex: number }
@@ -153,6 +157,27 @@ function AdminPanel({ onOpenSession }: { onOpenSession: (id: string) => void }) 
       </tbody></table></div>
     </section>
     <section className="panel span-two"><h2>発行済みアカウント</h2><div className="account-list">{accounts.map(item => <div key={item.id}><span className="avatar small">{item.display_name.slice(0, 1)}</span><span>{item.display_name}<small>{item.id}</small></span><span className="role-badge">{item.role}</span></div>)}</div></section>
+  </div>
+}
+
+function ProfilePanel() {
+  const [context, setContext] = useState<WorkerContext | null>(null)
+  const [error, setError] = useState('')
+  useEffect(() => { api<WorkerContext>('/api/profile').then(setContext).catch(caught => setError(caught instanceof Error ? caught.message : '読み込めませんでした')) }, [])
+  if (error) return <div className="empty-state"><p className="error-message">{error}</p></div>
+  if (!context) return <div className="loading">プロフィールと記憶を読み込んでいます…</div>
+  const profile = context.profile
+  const rows: Array<[string, string | number | null | string[]]> = [
+    ['現在の役割', profile.role], ['部署', profile.department], ['総経験年数', profile.totalExperienceYears],
+    ['現在業務の経験年数', profile.currentRoleExperienceYears], ['担当工程', profile.assignedProcesses],
+    ['担当設備', profile.assignedEquipment], ['担当業務', profile.responsibilities], ['資格', profile.qualifications],
+    ['得意領域', profile.expertise], ['教育経験', profile.educationExperience],
+  ]
+  return <div className="memory-page">
+    <header><h1>プロフィールと継続記憶</h1><p>セッション進行状態とは分離され、作業員単位で引き継がれる情報です。</p></header>
+    <section className="panel"><h2>Worker Profile</h2><dl className="profile-details">{rows.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{Array.isArray(value) ? value.join('、') || '未登録' : value ?? '未登録'}{typeof value === 'number' ? '年' : ''}</dd></div>)}</dl></section>
+    <section className="panel"><h2>Long-term Memory</h2><div className="memory-list">{context.memories.length ? context.memories.map(item => <article key={item.id}><span>{item.type}</span><p>{item.content}</p></article>) : <p className="muted">継続記憶はまだありません。</p>}</div></section>
+    <section className="panel"><h2>過去セッション要約</h2><div className="memory-list">{context.recentSessionSummaries.length ? context.recentSessionSummaries.map(item => <article key={item.sessionId}><p>{item.summary}</p>{item.unresolvedTopics.length > 0 && <small>未深掘り: {item.unresolvedTopics.join('、')}</small>}</article>) : <p className="muted">終了済みセッションはまだありません。</p>}</div></section>
   </div>
 }
 
@@ -334,7 +359,7 @@ function App() {
   const [account, setAccount] = useState<Account | null>(null)
   const [sessions, setSessions] = useState<Session[]>([])
   const [selectedId, setSelectedId] = useState<string | null>(null)
-  const [view, setView] = useState<'interview' | 'admin'>('interview')
+  const [view, setView] = useState<'interview' | 'profile' | 'admin'>('interview')
   const [language, setLanguage] = useState<Language>('ja')
   const [authChecked, setAuthChecked] = useState(false)
 
@@ -353,11 +378,11 @@ function App() {
   if (!account) return <Login onLogin={value => { setAccount(value); setView(value.role === 'admin' ? 'admin' : 'interview'); setAuthChecked(true) }} />
 
   return <div className="app-shell">
-    <aside className="sidebar"><div className="sidebar-brand"><span>AI</span><strong>AudioInterview</strong></div>{account.role === 'admin' && <button className={`admin-entry ${view === 'admin' ? 'selected' : ''}`} onClick={() => setView('admin')}>⚙ ID発行・管理画面</button>}<button className="new-session" onClick={createSession}>＋ 新しいインタビュー</button><label className="language-picker">言語<select value={language} onChange={event => setLanguage(event.target.value as Language)}>{Object.entries(languageLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+    <aside className="sidebar"><div className="sidebar-brand"><span>AI</span><strong>AudioInterview</strong></div>{account.role === 'admin' && <button className={`admin-entry ${view === 'admin' ? 'selected' : ''}`} onClick={() => setView('admin')}>⚙ ID発行・管理画面</button>}<button className={`profile-entry ${view === 'profile' ? 'selected' : ''}`} onClick={() => setView('profile')}>◎ プロフィール・継続記憶</button><button className="new-session" onClick={createSession}>＋ 新しいインタビュー</button><label className="language-picker">言語<select value={language} onChange={event => setLanguage(event.target.value as Language)}>{Object.entries(languageLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
       <nav><p>セッション</p>{sessions.map(item => <button key={item.id} className={selectedId === item.id && view === 'interview' ? 'selected' : ''} onClick={() => { setSelectedId(item.id); setView('interview') }}><span>{item.title}</span><small>{languageLabels[item.language]} · {item.status}</small></button>)}</nav>
       <div className="sidebar-bottom"><div className="account-chip"><span className="avatar small">{account.displayName.slice(0, 1)}</span><div><strong>{account.displayName}</strong><small>{account.id}</small></div><button title="ログアウト" onClick={signOut}>↪</button></div></div>
     </aside>
-    <main className="workspace">{view === 'admin' ? <AdminPanel onOpenSession={id => { setSelectedId(id); setView('interview') }} /> : selectedId ? <Interview key={selectedId} sessionId={selectedId} account={account} onSessionsChanged={loadSessions} /> : <div className="empty-state"><div>✦</div><h2>インタビューを始めましょう</h2><p>言語を選び、「新しいインタビュー」を押してください。</p><button className="primary" onClick={createSession}>新しいインタビュー</button></div>}</main>
+    <main className="workspace">{view === 'admin' ? <AdminPanel onOpenSession={id => { setSelectedId(id); setView('interview') }} /> : view === 'profile' ? <ProfilePanel /> : selectedId ? <Interview key={selectedId} sessionId={selectedId} account={account} onSessionsChanged={loadSessions} /> : <div className="empty-state"><div>✦</div><h2>インタビューを始めましょう</h2><p>言語を選び、「新しいインタビュー」を押してください。</p><button className="primary" onClick={createSession}>新しいインタビュー</button></div>}</main>
   </div>
 }
 

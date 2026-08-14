@@ -4,7 +4,7 @@ import {
   placeholderCorrectionInstruction,
   sanitizeAssistantText,
 } from './privacy/outputFilter.js';
-import type { AgentResult, ConversationGuide, ExtractedInfo, InterviewState, Language, MessageRow, RuntimeEnv } from './types.js';
+import type { AgentResult, ConversationGuide, ExtractedInfo, InterviewState, Language, MessageRow, RuntimeEnv, WorkerContext } from './types.js';
 
 export const endings: Record<Language, string> = {
   ja: 'ありがとうございました。これでインタビューを終了します。',
@@ -52,10 +52,11 @@ export async function runInterviewTurn(
   userInput: string,
   chatHistory: MessageRow[],
   language: Language,
+  workerContext?: WorkerContext,
 ): Promise<AgentResult> {
   const correctedMaskedText = await correctMaskedTranscript(env, userInput);
   const gptUserInput = correctedMaskedText || userInput;
-  const extracted = await extractInfo(env, gptUserInput, state, chatHistory);
+  const extracted = await extractInfo(env, gptUserInput, state, chatHistory, workerContext);
   const nextState = updateStateFromExtraction(structuredClone(state), extracted);
   const guide = buildConversationGuide(nextState, extracted);
 
@@ -71,7 +72,7 @@ export async function runInterviewTurn(
     };
   }
 
-  const generated = await generateUtterance(env, guide, nextState, gptUserInput, chatHistory);
+  const generated = await generateUtterance(env, guide, nextState, gptUserInput, chatHistory, workerContext);
   const localized = sanitizeAssistantText(await localizeUtterance(env, generated, language));
   updateAfterUtterance(nextState, localized);
 
@@ -100,7 +101,7 @@ ${maskedText}`;
   return corrected;
 }
 
-async function extractInfo(env: RuntimeEnv, userInput: string, state: InterviewState, chatHistory: MessageRow[]) {
+async function extractInfo(env: RuntimeEnv, userInput: string, state: InterviewState, chatHistory: MessageRow[], workerContext?: WorkerContext) {
   const prompt = `あなたは半構造化インタビューの情報抽出器です。
 直前のインタビュイ発話から、対象業務に関する情報を構造化してください。
 
@@ -161,8 +162,17 @@ async function extractInfo(env: RuntimeEnv, userInput: string, state: InterviewS
 - wants_to_stop:
   明確に終了したい場合のみ true。
 
+- profile_update:
+  本人の直前発話に明示されたプロフィール情報だけを抽出する。
+  role, department, totalExperienceYears, currentRoleExperienceYears, assignedProcesses,
+  assignedEquipment, responsibilities, qualifications, expertise, educationExperience を含める。
+  過去文脈から再抽出・推測せず、直前発話にないスカラーはnull、配列は[]にする。
+
 【現在の state】
 ${JSON.stringify(state)}
+
+【作業員プロフィール・過去セッションの記憶（参考文脈。今回の発話として抽出し直さない）】
+${JSON.stringify(workerContext ?? null)}
 
 【対話履歴】
 ${dumpMessages(chatHistory)}
@@ -368,6 +378,7 @@ async function generateUtterance(
   state: InterviewState,
   latestAnswer: string,
   chatHistory: MessageRow[],
+  workerContext?: WorkerContext,
 ) {
   const prompt = `あなたは半構造化インタビューを行う自然な聞き手です。
 
@@ -390,6 +401,8 @@ async function generateUtterance(
 - avoid_reasking に含まれることは絶対に聞き直さない。
 - use_as_known に含まれることは既知の前提として使う。
 - 対象業務から勝手に離れない。
+- 作業員プロフィールと長期記憶は質問の焦点選択と重複回避の参考文脈として使う。毎回引用・言及する必要はなく、過去の話と現在の話を混同しない。
+- 過去の未深掘りテーマが直前発話と自然につながる場合は優先してよい。唐突に話題を切り替えない。
 ${assistantPlaceholderInstruction()}
 
 DICEの使い方:
@@ -404,6 +417,9 @@ ${JSON.stringify(guide)}
 
 【現在の state】
 ${JSON.stringify(state)}
+
+【作業員プロフィール・長期記憶・過去セッション要約】
+${JSON.stringify(workerContext ?? null)}
 
 【対話履歴】
 ${dumpMessages(chatHistory)}

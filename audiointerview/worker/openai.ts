@@ -25,6 +25,27 @@ const extractionSchema = {
     signs_of_resistance: { type: 'array', items: { type: 'string' } },
     signs_of_no_information: { type: 'array', items: { type: 'string' } },
     wants_to_stop: { type: 'boolean' },
+    profile_update: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        role: { type: ['string', 'null'] },
+        department: { type: ['string', 'null'] },
+        totalExperienceYears: { type: ['number', 'null'] },
+        currentRoleExperienceYears: { type: ['number', 'null'] },
+        assignedProcesses: { type: 'array', items: { type: 'string' } },
+        assignedEquipment: { type: 'array', items: { type: 'string' } },
+        responsibilities: { type: 'array', items: { type: 'string' } },
+        qualifications: { type: 'array', items: { type: 'string' } },
+        expertise: { type: 'array', items: { type: 'string' } },
+        educationExperience: { type: 'array', items: { type: 'string' } },
+      },
+      required: [
+        'role', 'department', 'totalExperienceYears', 'currentRoleExperienceYears',
+        'assignedProcesses', 'assignedEquipment', 'responsibilities',
+        'qualifications', 'expertise', 'educationExperience',
+      ],
+    },
   },
   required: [
     'target_work',
@@ -43,6 +64,7 @@ const extractionSchema = {
     'signs_of_resistance',
     'signs_of_no_information',
     'wants_to_stop',
+    'profile_update',
   ],
 };
 
@@ -63,6 +85,18 @@ export const emptyExtraction: ExtractedInfo = {
   signs_of_resistance: [],
   signs_of_no_information: [],
   wants_to_stop: false,
+  profile_update: {
+    role: null,
+    department: null,
+    totalExperienceYears: null,
+    currentRoleExperienceYears: null,
+    assignedProcesses: [],
+    assignedEquipment: [],
+    responsibilities: [],
+    qualifications: [],
+    expertise: [],
+    educationExperience: [],
+  },
 };
 
 export function outputText(payload: ResponseMessage) {

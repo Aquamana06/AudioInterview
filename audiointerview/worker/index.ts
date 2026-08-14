@@ -16,6 +16,17 @@ import {
   updateState,
 } from './db.js';
 import { openaiStatus } from './openai.js';
+import {
+  applyProfileUpdate,
+  extractAndUpdateProfile,
+  finalizeSessionMemory,
+  getWorkerContext,
+  interviewTransition,
+  needsProfileBuilding,
+  nextProfileQuestion,
+  persistExtractedMemories,
+  profileOpening,
+} from './memory.js';
 import type { InputMode, InterviewSession, Language, RuntimeEnv } from './types.js';
 
 const languages = new Set<Language>(['ja', 'en', 'de']);
@@ -32,11 +43,15 @@ function cookieResponse(data: unknown, cookie: string, status = 200) {
 async function sessionPayload(env: RuntimeEnv, session: InterviewSession) {
   const messages = await listMessages(env, session.id);
   const savedState = await getState(env, session.id);
+  const workerContext = await getWorkerContext(env, session.account_id);
   return {
     session,
     messages: messages.map(mapMessage),
     state: savedState?.state ?? initialState(),
     stateLabel: savedState?.stateLabel ?? 'running',
+    workerProfile: workerContext.profile,
+    longTermMemories: workerContext.memories,
+    sessionSummary: workerContext.recentSessionSummaries.find((item) => item.sessionId === session.id) ?? null,
   };
 }
 
@@ -49,20 +64,40 @@ async function processMessage(
   const saved = await getState(env, session.id);
   const state = saved?.state ?? initialState();
   const history = await listMessages(env, session.id);
-  await insertMessage(env, session.id, 'user', content, inputMode, session.language);
+  const userMessageId = await insertMessage(env, session.id, 'user', content, inputMode, session.language);
+
+  if (session.phase === 'profile') {
+    const profile = await extractAndUpdateProfile(env, session.account_id, content, userMessageId);
+    const profileTurnCount = session.profile_turn_count + 1;
+    const profileDone = profileTurnCount >= 8 || (profileTurnCount >= 3 && !needsProfileBuilding(profile));
+    const text = profileDone
+      ? interviewTransition(session.language)
+      : await nextProfileQuestion(env, profile, content, session.language);
+    await insertMessage(env, session.id, 'system', text, 'system', session.language, {
+      phase: 'profile', profileSnapshot: profile, profileDone,
+    });
+    await env.RI_db.prepare('UPDATE interview_sessions SET phase = ?, profile_turn_count = ?, updated_at = ? WHERE id = ?')
+      .bind(profileDone ? 'interview' : 'profile', profileTurnCount, nowIso(), session.id).run();
+    return sessionPayload(env, { ...session, phase: profileDone ? 'interview' : 'profile', profile_turn_count: profileTurnCount });
+  }
+
   const currentHistory = await listMessages(env, session.id);
-  const result = await runInterviewTurn(env, state, content, currentHistory, session.language);
+  const workerContext = await getWorkerContext(env, session.account_id);
+  const result = await runInterviewTurn(env, state, content, currentHistory, session.language, workerContext);
+  await applyProfileUpdate(env, session.account_id, result.extracted.profile_update, userMessageId);
   await insertMessage(env, session.id, 'system', result.text, 'system', session.language, {
     extracted: result.extracted,
     guide: result.guide,
     stateSnapshot: result.state,
   });
   await updateState(env, session.id, result.state, result.stateLabel);
+  await persistExtractedMemories(env, session.account_id, session.id, userMessageId, result.extracted);
   await env.RI_db.prepare('UPDATE interview_sessions SET updated_at = ? WHERE id = ?').bind(nowIso(), session.id).run();
   if (result.stateLabel === 'end') {
     await env.RI_db.prepare("UPDATE interview_sessions SET status = 'ended', ended_at = ?, updated_at = ? WHERE id = ?")
       .bind(nowIso(), nowIso(), session.id)
       .run();
+    await finalizeSessionMemory(env, session.account_id, session.id, result.state);
   }
   return { ...(await sessionPayload(env, { ...session, status: result.stateLabel === 'end' ? 'ended' : session.status })), correctedMaskedText: result.correctedMaskedText, previousMessageCount: history.length };
 }
@@ -84,7 +119,8 @@ async function replayAfterEdit(env: RuntimeEnv, session: InterviewSession, messa
   for (const turn of userTurns) {
     await insertMessage(env, session.id, 'user', turn.content, turn.input_mode, session.language);
     const history = await listMessages(env, session.id);
-    const result = await runInterviewTurn(env, state, turn.content, history, session.language);
+    const workerContext = await getWorkerContext(env, session.account_id);
+    const result = await runInterviewTurn(env, state, turn.content, history, session.language, workerContext);
     state = result.state;
     await insertMessage(env, session.id, 'system', result.text, 'system', session.language, {
       extracted: result.extracted,
@@ -123,6 +159,17 @@ async function handleApi(request: Request, env: RuntimeEnv) {
     return json({ account: publicAccount(auth.account) });
   }
 
+  if (request.method === 'GET' && path === '/api/profile') {
+    const auth = await requireAuth(request, env);
+    return json(await getWorkerContext(env, auth.account.id));
+  }
+
+  const workerContextMatch = path.match(/^\/api\/workers\/([^/]+)\/context$/);
+  if (request.method === 'GET' && workerContextMatch) {
+    await requireAdmin(request, env);
+    return json(await getWorkerContext(env, decodeURIComponent(workerContextMatch[1])));
+  }
+
   if (request.method === 'PUT' && path === '/api/me/password') {
     const auth = await requireAdmin(request, env);
     const body = await jsonBody<{ password?: string }>(request);
@@ -150,8 +197,11 @@ async function handleApi(request: Request, env: RuntimeEnv) {
     const lang = language(body.language);
     const id = randomId('interview');
     const title = body.title?.trim() || `Interview ${new Date().toLocaleDateString('ja-JP')}`;
-    await env.RI_db.prepare('INSERT INTO interview_sessions (id, account_id, title, language) VALUES (?, ?, ?, ?)')
-      .bind(id, auth.account.id, title, lang)
+    const priorSession = await env.RI_db.prepare('SELECT id FROM interview_sessions WHERE account_id = ? LIMIT 1')
+      .bind(auth.account.id).first();
+    const phase = priorSession ? 'interview' : 'profile';
+    await env.RI_db.prepare('INSERT INTO interview_sessions (id, account_id, title, language, phase) VALUES (?, ?, ?, ?, ?)')
+      .bind(id, auth.account.id, title, lang, phase)
       .run();
     const session = await getOwnedSession(env, id, auth.account.id, auth.account.role === 'admin');
     return json(await sessionPayload(env, session!), { status: 201 });
@@ -167,7 +217,7 @@ async function handleApi(request: Request, env: RuntimeEnv) {
     if (request.method === 'POST' && action === 'start') {
       const existing = await listMessages(env, session.id);
       if (!existing.length) {
-        const opening = firstUtterance(session.language);
+        const opening = session.phase === 'profile' ? profileOpening(session.language) : firstUtterance(session.language);
         await insertMessage(env, session.id, 'system', opening, 'system', session.language, { stateSnapshot: initialState() });
         await updateState(env, session.id, initialState(), 'running');
       }
@@ -187,6 +237,9 @@ async function handleApi(request: Request, env: RuntimeEnv) {
         await env.RI_db.prepare("UPDATE interview_sessions SET status = 'ended', ended_at = ?, updated_at = ? WHERE id = ?")
           .bind(nowIso(), nowIso(), session.id)
           .run();
+        const saved = await getState(env, session.id);
+        await updateState(env, session.id, saved?.state ?? initialState(), 'end');
+        await finalizeSessionMemory(env, session.account_id, session.id, saved?.state ?? initialState());
       }
       return json(await sessionPayload(env, { ...session, status: 'ended', ended_at: nowIso() }));
     }

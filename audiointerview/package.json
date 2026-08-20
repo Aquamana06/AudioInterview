@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "interview": "node terminal-interview.mjs",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
     "preview": "npm run build && vite preview",

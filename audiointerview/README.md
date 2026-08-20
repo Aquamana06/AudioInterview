@@ -1,4 +1,21 @@
-# React + TypeScript + Vite
+# AudioInterview
+
+## ターミナルでインタビューを試す
+
+`.dev.vars` に `OPENAI_API_KEY` を設定して、ブラウザ版と同じ
+`worker/agent.ts` のインタビューロジックを対話形式で実行できます。
+
+```bash
+npm run interview
+```
+
+既定では各ターンの depth や抽出結果も表示します。会話だけを表示する場合は
+`npm run interview -- --no-debug`、言語を変える場合は
+`npm run interview -- --lang en`（`ja` / `en` / `de`）を使用します。
+
+入力中は `/state`、`/history`、`/help`、`/quit` を利用できます。
+
+## React + TypeScript + Vite
 
 This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
 

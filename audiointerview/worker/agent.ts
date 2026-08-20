@@ -82,6 +82,12 @@ async function extractInfo(env: RuntimeEnv, userInput: string, state: InterviewS
 重要:
 - キーワード一致ではなく、対話の流れで判断する。
 - 想像で補わない。
+- 抽象的・一般的な表現を、深さの根拠として過大評価しない。
+- reasons は、具体的な実践や判断と「なぜ」が明示的に結び付いている場合だけ抽出する。
+- sources は、経験・教育・他者からの教えなど、考え方の形成源が具体的に語られた場合だけ抽出する。
+- values は、単なる好みや感想ではなく、業務で優先する判断基準・信念が明示された場合だけ抽出する。
+- personal_meanings は、個人的な経験と現在の仕事観のつながり、または本人にとっての仕事の意味が明示された場合だけ抽出する。
+- 同じ一文を複数の深さ項目へ安易に重複分類しない。判断に迷う場合は抽出しない。
 - 既に分かっていることは、必要に応じて維持してよいが、最新回答にないことを無理に追加しない。
 - reason/source は独立した質問項目ではなく、対象業務の深さを高める材料。
 - friction は、相手が「さっき言った」「同じこと聞かないで」「今はその話」など、重複・脱線・誤解を指摘している場合。
@@ -170,20 +176,19 @@ function updateStateFromExtraction(state: InterviewState, info: ExtractedInfo) {
   for (const item of info.practices) state.known_facts.push(`業務上の実践: ${item}`);
   if (info.practices.length) {
     state.task_coverage = Math.min(1, state.task_coverage + 0.1);
-    state.task_depth = Math.max(state.task_depth, 2);
   }
 
   for (const item of info.reasons) state.known_facts.push(`理由: ${item}`);
-  if (info.reasons.length) state.task_depth = Math.max(state.task_depth, 3);
 
   for (const item of info.sources) state.known_facts.push(`源泉: ${item}`);
-  if (info.sources.length) state.task_depth = Math.max(state.task_depth, 4);
 
   for (const item of info.values) state.known_facts.push(`価値観: ${item}`);
-  if (info.values.length) state.task_depth = Math.max(state.task_depth, 5);
 
   for (const item of info.personal_meanings) state.known_facts.push(`個人的意味・価値観の形成背景・真髄: ${item}`);
-  if (info.personal_meanings.length) state.task_depth = Math.max(state.task_depth, 6);
+
+  // Depth is earned only when the evidence forms a contiguous chain. A single
+  // abstract value or personal anecdote must not skip the missing layers.
+  state.task_depth = Math.max(state.task_depth, calculateSupportedDepth(state));
 
   for (const item of info.irregular_situations) state.known_facts.push(`イレギュラー状況: ${item}`);
   if (info.irregular_situations.length) state.irregular_coverage = Math.min(1, state.irregular_coverage + 0.25);
@@ -359,6 +364,9 @@ async function generateUtterance(
 必ず守ること:
 - guide に従う。
 - 対話履歴(chat_history)を踏まえて、自然な会話として発話する。
+- 発話は短い1〜2文に収める。前置きや説明を重ねない。
+- 質問する場合は、一度に一つだけ尋ねる。複数の疑問文や質問項目を並べない。
+- 相手の発話の要約は、質問に必要な最小限の一節だけにする。
 - should_ask_question が false の場合は、原則として質問しない。
 - should_repair が true の場合は、まず謝り、既に分かっていることを正しく言い直す。
 - should_answer_user_question が true の場合は、相手の確認・逆質問に短く答える。
@@ -385,7 +393,7 @@ ${dumpMessages(chatHistory)}
 【直前の回答】
 ${latestAnswer}
 
-次の自然な発話を生成してください。`;
+次の自然でコンパクトな発話だけを生成してください。解説やラベルは付けないでください。`;
 
   const text = await safeOpenaiText(env, prompt);
   return text.trim() || fallbackQuestion(state);
@@ -454,6 +462,18 @@ function uniqueNonempty(items: string[]) {
     result.push(value);
   }
   return result;
+}
+
+function calculateSupportedDepth(state: InterviewState) {
+  if (!state.target_work) return 0;
+
+  const has = (prefix: string) => state.known_facts.some((fact) => fact.startsWith(prefix));
+  if (!has('業務上の実践:')) return 1;
+  if (!has('理由:')) return 2;
+  if (!has('源泉:')) return 3;
+  if (!has('価値観:')) return 4;
+  if (!has('個人的意味・価値観の形成背景・真髄:')) return 5;
+  return 6;
 }
 
 function hasInformativeContent(info: ExtractedInfo) {

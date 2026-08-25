@@ -4,7 +4,7 @@ CREATE TABLE IF NOT EXISTS participant_profiles (
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE TABLE IF NOT EXISTS session_summaries (
+CREATE TABLE IF NOT EXISTS longitudinal_session_summaries (
   session_id TEXT PRIMARY KEY REFERENCES interview_sessions(id) ON DELETE CASCADE,
   account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
   summary TEXT NOT NULL,
@@ -43,6 +43,6 @@ CREATE TABLE IF NOT EXISTS memory_edges (
   UNIQUE(account_id, canonical_key)
 );
 
-CREATE INDEX IF NOT EXISTS idx_summaries_account_ended ON session_summaries(account_id, ended_at DESC);
+CREATE INDEX IF NOT EXISTS idx_longitudinal_summaries_account_ended ON longitudinal_session_summaries(account_id, ended_at DESC);
 CREATE INDEX IF NOT EXISTS idx_memory_nodes_account_seen ON memory_nodes(account_id, last_seen_at DESC);
 CREATE INDEX IF NOT EXISTS idx_memory_edges_account_seen ON memory_edges(account_id, last_seen_at DESC);

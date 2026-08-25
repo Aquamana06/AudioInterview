@@ -20,7 +20,7 @@ function mergeProfile(current: ParticipantProfile, patch: ParticipantProfile): P
 export async function loadParticipantMemory(env: RuntimeEnv, accountId: string): Promise<ParticipantMemory> {
   const profileRow = await env.RI_db.prepare('SELECT profile_json FROM participant_profiles WHERE account_id = ?').bind(accountId).first<{ profile_json: string }>();
   const countRow = await env.RI_db.prepare("SELECT COUNT(*) AS count FROM interview_sessions WHERE account_id = ? AND status = 'ended'").bind(accountId).first<{ count: number }>();
-  const summaries = await env.RI_db.prepare('SELECT session_id, summary, ended_at FROM session_summaries WHERE account_id = ? ORDER BY ended_at DESC LIMIT 5').bind(accountId).all<ParticipantMemory['recent_summaries'][number]>();
+  const summaries = await env.RI_db.prepare('SELECT session_id, summary, ended_at FROM longitudinal_session_summaries WHERE account_id = ? ORDER BY ended_at DESC LIMIT 5').bind(accountId).all<ParticipantMemory['recent_summaries'][number]>();
   const nodeRows = await env.RI_db.prepare("SELECT id, kind, canonical_key AS key, text, status, confidence, first_session_id, last_session_id, evidence_json FROM memory_nodes WHERE account_id = ? AND status NOT IN ('superseded') ORDER BY last_seen_at DESC LIMIT 80").bind(accountId).all<Omit<StoredMemoryNode, 'evidence_message_ids'> & { evidence_json: string }>();
   const edgeRows = await env.RI_db.prepare('SELECT id, from_node_id, to_node_id, relation, explicitness, confidence, first_session_id, last_session_id, evidence_json FROM memory_edges WHERE account_id = ? ORDER BY last_seen_at DESC LIMIT 120').bind(accountId).all<Omit<StoredMemoryEdge, 'from_key' | 'to_key' | 'evidence_message_ids'> & { evidence_json: string }>();
   const nodes = nodeRows.results.map(({ evidence_json, ...node }) => ({ ...node, evidence_message_ids: JSON.parse(evidence_json) as string[] }));
@@ -62,7 +62,7 @@ export function selectRelevantMemory(memory: ParticipantMemory, userInput: strin
 export async function saveSessionMemory(env: RuntimeEnv, accountId: string, sessionId: string, currentProfile: ParticipantProfile, update: SessionMemoryUpdate) {
   const merged = mergeProfile(currentProfile, update.profile_patch);
   await env.RI_db.prepare(`INSERT INTO participant_profiles (account_id, profile_json, updated_at) VALUES (?, ?, ?) ON CONFLICT(account_id) DO UPDATE SET profile_json = excluded.profile_json, updated_at = excluded.updated_at`).bind(accountId, JSON.stringify(merged), nowIso()).run();
-  await env.RI_db.prepare(`INSERT INTO session_summaries (session_id, account_id, summary, ended_at) VALUES (?, ?, ?, ?) ON CONFLICT(session_id) DO UPDATE SET summary = excluded.summary, ended_at = excluded.ended_at`).bind(sessionId, accountId, update.summary, nowIso()).run();
+  await env.RI_db.prepare(`INSERT INTO longitudinal_session_summaries (session_id, account_id, summary, ended_at) VALUES (?, ?, ?, ?) ON CONFLICT(session_id) DO UPDATE SET summary = excluded.summary, ended_at = excluded.ended_at`).bind(sessionId, accountId, update.summary, nowIso()).run();
 
   const nodeIds = new Map<string, string>();
   for (const node of update.nodes) {

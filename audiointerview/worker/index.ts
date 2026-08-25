@@ -18,7 +18,7 @@ import {
 import { generateSessionStarter, runContextualInterviewTurn } from './longitudinal-agent.js';
 import { loadParticipantMemory, saveSessionMemory, selectRelevantMemory } from './longitudinal-memory.js';
 import { extractSessionMemory } from './longitudinal-openai.js';
-import { openaiStatus } from './openai.js';
+import { openaiStatus, transcribeAudio } from './openai.js';
 import { generateProfileInterviewStarter, runProfileInterviewTurn } from './profile-interview-agent.js';
 import type { InputMode, InterviewSession, Language, RuntimeEnv } from './types.js';
 
@@ -136,6 +136,24 @@ async function handleApi(request: Request, env: RuntimeEnv) {
   const path = url.pathname;
 
   if (request.method === 'GET' && path === '/api/status') return json(await openaiStatus(env));
+
+  if (request.method === 'POST' && path === '/api/local/mask-text') {
+    await requireAuth(request, env);
+    const body = await jsonBody<{ text?: string }>(request);
+    const text = body.text?.trim() ?? '';
+    if (!text) throw new HttpError('text is required');
+    return json({ normalizedText: text, maskedText: text });
+  }
+
+  if (request.method === 'POST' && path === '/api/local/transcribe') {
+    await requireAuth(request, env);
+    const form = await request.formData();
+    const file = form.get('file');
+    if (!(file instanceof File)) throw new HttpError('Audio file is required');
+    const languageValue = form.get('language');
+    const rawText = await transcribeAudio(env, file, typeof languageValue === 'string' ? languageValue : undefined);
+    return json({ rawText, normalizedText: rawText, maskedText: rawText });
+  }
 
   if (request.method === 'POST' && path === '/api/auth/login') {
     const body = await jsonBody<{ id?: string; password?: string; qrToken?: string }>(request);

@@ -162,8 +162,6 @@ function Interview({ sessionId, account, onSessionsChanged }: { sessionId: strin
   const [displayOverrides, setDisplayOverrides] = useState<Record<string, string>>({})
   const [speechState, setSpeechState] = useState<SpeechState>('ready')
   const [liveTranscript, setLiveTranscript] = useState('')
-  const [normalizedTranscript, setNormalizedTranscript] = useState('')
-  const [maskedTermCount, setMaskedTermCount] = useState(0)
   const [error, setError] = useState('')
   const [editingId, setEditingId] = useState<string | null>(null)
   const [handsFree, setHandsFree] = useState(false)
@@ -200,12 +198,10 @@ function Interview({ sessionId, account, onSessionsChanged }: { sessionId: strin
     if (!blob.size || !payload) return null
     const sequence = ++transcriptionSequenceRef.current
     const form = new FormData(); form.append('audio', blob, 'interview.webm'); form.append('language', payload.session.language)
-    const result = await api<{ rawText: string; normalizedText: string; maskedText: string }>(`${localBackendUrl}/transcribe`, { method: 'POST', body: form })
+    const result = await api<{ rawText: string }>(`${localBackendUrl}/transcribe`, { method: 'POST', body: form })
     if (mode === 'preview' && !finalizingRef.current && sequence === transcriptionSequenceRef.current) setLiveTranscript(result.rawText)
     if (mode === 'final' && sequence === transcriptionSequenceRef.current) {
       setLiveTranscript(result.rawText)
-      setNormalizedTranscript(result.normalizedText)
-      setMaskedTermCount((result.maskedText.match(/<[A-Z_]+_[A-Z]+>/g) ?? []).length)
     }
     return result
   }
@@ -213,7 +209,7 @@ function Interview({ sessionId, account, onSessionsChanged }: { sessionId: strin
   async function startRecording() {
     if (!payload || payload.session.status === 'ended' || recordingRef.current || isBusy) return
     try {
-      setError(''); setLiveTranscript(''); setNormalizedTranscript(''); setMaskedTermCount(0); finalizingRef.current = false
+      setError(''); setLiveTranscript(''); finalizingRef.current = false
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true }); streamRef.current = stream
       const recorder = new MediaRecorder(stream); chunksRef.current = []; recorderRef.current = recorder
       recorder.ondataavailable = event => {
@@ -235,7 +231,7 @@ function Interview({ sessionId, account, onSessionsChanged }: { sessionId: strin
     try {
       const blob = new Blob(chunksRef.current, { type: mimeType || 'audio/webm' })
       const result = await transcribe(blob, 'final')
-      if (result?.maskedText.trim()) await send(result.maskedText, 'voice', result.normalizedText)
+      if (result?.rawText.trim()) await send(result.rawText, 'voice')
       else setSpeechState('ready')
     } catch (caught) { setError(caught instanceof Error ? caught.message : '音声認識に失敗しました'); setSpeechState('error') }
     finally { recorderRef.current = null; finalizingRef.current = false }
@@ -265,13 +261,13 @@ function Interview({ sessionId, account, onSessionsChanged }: { sessionId: strin
     recognitionRef.current = recognition; recognition.start(); handsFreeRef.current = true; setHandsFree(true); setSpeechState('wake')
   }
 
-  async function send(maskedText: string, inputMode: 'text' | 'voice', displayText?: string, manageBusy = true) {
-    if (!payload || !maskedText.trim()) return
+  async function send(content: string, inputMode: 'text' | 'voice', displayText?: string, manageBusy = true) {
+    if (!payload || !content.trim()) return
     if (manageBusy) setIsBusy(true)
     setSpeechState('thinking'); setError('')
     try {
       const beforeIds = new Set(payload.messages.map(message => message.id))
-      const result = await api<SessionPayload>(`/api/sessions/${payload.session.id}/messages`, jsonInit('POST', { maskedText, inputMode, editMessageId: editingId || undefined }))
+      const result = await api<SessionPayload>(`/api/sessions/${payload.session.id}/messages`, jsonInit('POST', { maskedText: content, inputMode, editMessageId: editingId || undefined }))
       const newUser = result.messages.find(message => message.role === 'user' && !beforeIds.has(message.id))
       if (newUser && displayText) setDisplayOverrides(current => ({ ...current, [newUser.id]: displayText }))
       setPayload(result); setText(''); setEditingId(null); onSessionsChanged()
@@ -284,11 +280,10 @@ function Interview({ sessionId, account, onSessionsChanged }: { sessionId: strin
 
   async function sendText() {
     if (!text.trim() || isBusy) return
-    setIsBusy(true); setSpeechState('transcribing'); setError('')
+    setIsBusy(true); setSpeechState('thinking'); setError('')
     try {
-      const masked = await api<{ normalizedText: string; maskedText: string }>(`${localBackendUrl}/mask-text`, jsonInit('POST', { text }))
-      await send(masked.maskedText, 'text', masked.normalizedText, false)
-    } catch (caught) { setError(caught instanceof Error ? caught.message : 'ローカル秘匿処理に失敗しました'); setSpeechState('error') }
+      await send(text, 'text', undefined, false)
+    } catch (caught) { setError(caught instanceof Error ? caught.message : '送信できませんでした'); setSpeechState('error') }
     finally { setIsBusy(false) }
   }
 
@@ -318,14 +313,14 @@ function Interview({ sessionId, account, onSessionsChanged }: { sessionId: strin
         </div>
       </article>)}<div ref={endRef} />
     </div>
-    {(liveTranscript || normalizedTranscript) && <div className="live-strip"><span><b>Whisper</b>{liveTranscript}</span><span><b>専門用語補正</b>{normalizedTranscript}</span><span className={maskedTermCount ? 'mask-applied' : ''}><b>Semantic Masking</b>{maskedTermCount ? `${maskedTermCount}件適用済み` : '対象語なし'}</span></div>}
+    {liveTranscript && <div className="live-strip"><span><b>Whisper</b>{liveTranscript}</span></div>}
     <footer className="composer">
       {editingId && <div className="editing-banner">過去の回答を編集中。この時点以降を再生成します。<button onClick={() => { setEditingId(null); setText('') }}>取消</button></div>}
       {error && <p className="error-message composer-error">{error}</p>}
       <textarea id="answer" value={text} onChange={event => setText(event.target.value)} onFocus={() => { if (recordingRef.current) stopRecording() }} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void sendText() } }} placeholder={payload.session.status === 'ended' ? 'このインタビューは終了しました' : '回答を入力（Enterで送信、Shift+Enterで改行）'} disabled={payload.session.status === 'ended' || isBusy} />
       <div className="composer-actions"><button className={handsFree ? 'active-voice' : ''} onClick={toggleHandsFree} disabled={payload.session.status === 'ended' || isBusy}>⌁ {handsFree ? '起動語の待受を停止' : 'ハンズフリー待受を開始'}</button><button onClick={isRecording ? stopRecording : startRecording} disabled={payload.session.status === 'ended' || isBusy}>{isRecording ? '■ 録音して送信' : '● 今すぐ録音'}</button><button className="primary send" onClick={() => void sendText()} disabled={!text.trim() || payload.session.status === 'ended' || isBusy}>{isBusy ? '処理中…' : 'テキスト送信'}</button></div>
       <p className="voice-help">ハンズフリー：最初は「hey whisper」で録音開始。以後はAIの読み上げ終了後に自動録音し、「over」で停止・送信します。 今すぐ録音：起動語なしで開始します。</p>
-      <p className="privacy-note">音声はローカルWhisperで処理され、専門用語補正・Semantic Masking後のテキストだけをAIへ送信します。</p>
+      <p className="privacy-note">音声はローカルWhisperで文字起こしされ、そのテキストをAIへ送信します。</p>
     </footer>
   </section>
 }

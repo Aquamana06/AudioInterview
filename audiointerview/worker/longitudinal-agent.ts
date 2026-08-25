@@ -93,8 +93,41 @@ export async function runContextualInterviewTurn(
   currentSessionHistory: MessageRow[],
   language: Language,
   relevantMemory: ContextualMemory,
+  depthStagnationCount = 0,
 ): Promise<AgentResult> {
   const context = memoryMessage(relevantMemory, language);
-  const history = context ? [context, ...currentSessionHistory] : currentSessionHistory;
-  return runInterviewTurn(env, state, userInput, history, language);
+  const pivotInstruction = depthStagnationCount >= 3 ? depthPivotMessage(language, Boolean(context)) : null;
+  const history = [context, pivotInstruction, ...currentSessionHistory].filter((message): message is MessageRow => Boolean(message));
+  const result = await runInterviewTurn(env, state, userInput, history, language);
+  result.state.task_depth = Math.max(result.state.task_depth, calculateFlexibleDepth(result.state));
+  return result;
+}
+
+function calculateFlexibleDepth(state: InterviewState) {
+  if (!state.target_work) return 0;
+
+  const has = (prefix: string) => state.known_facts.some((fact) => fact.startsWith(prefix));
+  if (has('個人的意味・価値観の形成背景・真髄:')) return 6;
+  if (has('価値観:')) return 5;
+  if (has('源泉:')) return 4;
+  if (has('理由:')) return 3;
+  if (has('業務上の実践:')) return 2;
+  return 1;
+}
+
+function depthPivotMessage(language: Language, hasMemory: boolean): MessageRow {
+  const content = hasMemory
+    ? `【このターンだけの質問方針】depthが3回答ターン以上変化していない。これまでと同じ聞き方をやめ、質問の方向を大きく変えること。【過去セッションから得た参照情報】に含まれる過去セッションの具体情報、または初回プロフィールの仕事情報を一つ必ず発話に反映し、今回の対象業務とのつながり・違い・変化のいずれかを一問だけ尋ねること。過去情報が今回も当てはまるとは決めつけず、本人が訂正できる聞き方にすること。`
+    : `【このターンだけの質問方針】depthが3回答ターン以上変化していない。これまでと同じ聞き方をやめ、現在の会話で既知の具体的な業務場面・実践・経験を一つ必ず使い、比較・変化・葛藤・きっかけのいずれかへ質問の方向を大きく変えること。理由を同じ表現で聞き直さないこと。`;
+  return {
+    id: 'terminal_depth_pivot',
+    session_id: 'terminal',
+    role: 'system',
+    content,
+    input_mode: 'system',
+    language,
+    meta_json: JSON.stringify({ kind: 'terminal_depth_pivot' }),
+    created_at: new Date(0).toISOString(),
+    updated_at: new Date(0).toISOString(),
+  };
 }

@@ -327,6 +327,7 @@ async function main() {
   const sessionId = `cli_${randomUUID()}`;
   const isFirstLongitudinalSession = options.interviewModel === 'longitudinal' && participantMemory.session_count === 0;
   let state = initialState();
+  let longitudinalDepthStagnationCount = 0;
   const messages: MessageRow[] = [];
 
   if (!env.OPENAI_API_KEY) {
@@ -384,6 +385,7 @@ async function main() {
 
       messages.push(makeMessage('user', answer, options.language, sessionId));
       process.stdout.write('interviewer is thinking...\r');
+      const depthBeforeTurn = state.task_depth;
 
       const result = isFirstLongitudinalSession
         ? await runProfileInterviewTurn(env, state, answer, messages, options.language, participantMemory.profile)
@@ -395,9 +397,13 @@ async function main() {
             messages,
             options.language,
             selectRelevantMemory(participantMemory, answer),
+            longitudinalDepthStagnationCount,
             )
           : await runInterviewTurn(env, state, answer, messages, options.language);
       state = result.state;
+      if (!isFirstLongitudinalSession && options.interviewModel === 'longitudinal') {
+        longitudinalDepthStagnationCount = state.task_depth === depthBeforeTurn ? longitudinalDepthStagnationCount + 1 : 0;
+      }
       messages.push(
         makeMessage('system', result.text, options.language, sessionId, {
           extracted: result.extracted,

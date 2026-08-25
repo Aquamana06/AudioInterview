@@ -15,6 +15,23 @@ npm run interview
 
 入力中は `/state`、`/history`、`/help`、`/quit` を利用できます。
 
+インタビューモデルは起動時に切り替えられます。`original` は既存の単発モデル、`longitudinal` は今回追加した縦断型モデルです。縦断型では同じ参加者IDを指定すると、前回までのプロフィール・要約・因果記憶を引き継ぎます。
+
+`longitudinal` の第1セッションは、担当、役割・役職、経験、責任範囲、一日の流れなどを差し支えない範囲で尋ねるプロフィール形成回です。第2セッション以降は「先ほどの業務」から入り、既存の調整行動を起点とするインタビューへ自動的に切り替わります。
+
+```bash
+npm run interview -- --model original
+npm run interview -- --model longitudinal --participant user-001
+```
+
+OpenAIの基盤モデル自体を切り替える場合は、区別して `--llm-model` を使います。
+
+```bash
+npm run interview -- --model longitudinal --participant user-001 --llm-model gpt-5.5
+```
+
+記憶は `.terminal-interview-memory.local` に保存され、`/memory` で現在の内容を確認できます。
+
 ## React + TypeScript + Vite
 
 This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.

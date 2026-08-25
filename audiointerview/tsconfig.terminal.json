@@ -9,5 +9,14 @@
     "rootDir": ".",
     "types": ["node", "./worker-configuration.d.ts"]
   },
-  "include": ["scripts/terminal-interview.ts", "worker/agent.ts", "worker/openai.ts", "worker/types.ts"]
+  "include": [
+    "scripts/terminal-interview.ts",
+    "worker/agent.ts",
+    "worker/db.ts",
+    "worker/openai.ts",
+    "worker/types.ts",
+    "worker/profile-interview-agent.ts",
+    "worker/profile-interview-openai.ts",
+    "worker/longitudinal-*.ts"
+  ]
 }

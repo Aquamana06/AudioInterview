@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import QRCode from 'qrcode'
 import './App.css'
-import factoryScene from './assets/interview-factory.png'
+import alpacaBackground from './assets/interview-alpaca-background.png'
 
 type Language = 'ja' | 'en' | 'de'
 type Role = 'admin' | 'operator'
@@ -12,6 +12,7 @@ type InterviewState = { task_coverage: number; task_depth: number; irregular_cov
 type SessionPayload = { session: Session; messages: Message[]; state: InterviewState; stateLabel: 'running' | 'end' }
 type SpeechState = 'ready' | 'wake' | 'recording' | 'transcribing' | 'thinking' | 'speaking' | 'ended' | 'error'
 
+type BarcodeDetectorLike = { detect(source: ImageBitmap): Promise<Array<{ rawValue: string }>> }
 type SpeechRecognitionEventLike = { results: ArrayLike<{ isFinal: boolean; 0: { transcript: string } }>; resultIndex: number }
 type SpeechRecognitionLike = {
   continuous: boolean
@@ -23,7 +24,6 @@ type SpeechRecognitionLike = {
   start(): void
   stop(): void
 }
-type BarcodeDetectorLike = { detect(source: ImageBitmap): Promise<Array<{ rawValue: string }>> }
 
 const labels: Record<SpeechState, string> = {
   ready: 'Ready', wake: 'Listening for “hey whisper”', recording: 'Recording', transcribing: 'Local Whisper transcribing',
@@ -119,7 +119,6 @@ function AdminPanel({ onOpenSession }: { onOpenSession: (id: string) => void }) 
     setAccounts(accountResult.accounts); setHistories(historyResult.histories)
   }, [])
   useEffect(() => { void load() }, [load])
-
   async function issue(event: React.FormEvent) {
     event.preventDefault(); setNotice('')
     try {
@@ -157,7 +156,7 @@ function AdminPanel({ onOpenSession }: { onOpenSession: (id: string) => void }) 
   </div>
 }
 
-function Interview({ sessionId, account, onSessionsChanged, onExit }: { sessionId: string; account: Account; onSessionsChanged: () => void; onExit: () => void }) {
+function Interview({ sessionId, onSessionsChanged, onExit }: { sessionId: string; onSessionsChanged: () => void; onExit: () => void }) {
   const [payload, setPayload] = useState<SessionPayload | null>(null)
   const [text, setText] = useState('')
   const [displayOverrides, setDisplayOverrides] = useState<Record<string, string>>({})
@@ -175,6 +174,7 @@ function Interview({ sessionId, account, onSessionsChanged, onExit }: { sessionI
   const chunksRef = useRef<Blob[]>([])
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null)
   const handsFreeRef = useRef(false)
+  const commandTranscriptRef = useRef('')
   const previewBusyRef = useRef(false)
   const finalizingRef = useRef(false)
   const transcriptionSequenceRef = useRef(0)
@@ -185,8 +185,7 @@ function Interview({ sessionId, account, onSessionsChanged, onExit }: { sessionI
     speechSynthesis.cancel(); const utterance = new SpeechSynthesisUtterance(value); utterance.lang = locale[language]
     utterance.onstart = () => setSpeechState('speaking')
     utterance.onend = () => {
-      if (handsFreeRef.current) void startRecordingRef.current()
-      else setSpeechState('ready')
+      setSpeechState('ready')
     }
     speechSynthesis.speak(utterance)
   }, [])
@@ -195,6 +194,13 @@ function Interview({ sessionId, account, onSessionsChanged, onExit }: { sessionI
     const data = await api<SessionPayload>(`/api/sessions/${sessionId}`); setPayload(data)
   }, [sessionId])
   useEffect(() => { void load() }, [load])
+  useEffect(() => {
+    if (!payload || payload.session.status === 'ended' || handsFree || isBusy) return
+    const timer = window.setTimeout(() => {
+      if (!handsFreeRef.current) toggleHandsFree()
+    }, 0)
+    return () => window.clearTimeout(timer)
+  }, [payload?.session.id, payload?.session.status])
   useEffect(() => {
     if (!streamingMessageId || !payload) return
     const message = payload.messages.find(item => item.id === streamingMessageId)
@@ -209,7 +215,7 @@ function Interview({ sessionId, account, onSessionsChanged, onExit }: { sessionI
         const pendingSpeech = pendingSpeechRef.current
         pendingSpeechRef.current = null
         if (pendingSpeech) speak(pendingSpeech.content, pendingSpeech.language)
-        else setSpeechState(payload.session.status === 'ended' ? 'ended' : handsFreeRef.current ? 'wake' : 'ready')
+        else setSpeechState(payload.session.status === 'ended' ? 'ended' : 'ready')
       }
     }, 60)
     return () => window.clearInterval(timer)
@@ -229,7 +235,14 @@ function Interview({ sessionId, account, onSessionsChanged, onExit }: { sessionI
     if (!blob.size || !payload) return null
     const sequence = ++transcriptionSequenceRef.current
     const form = new FormData(); form.append('audio', blob, 'interview.webm'); form.append('language', payload.session.language)
-    const result = await api<{ rawText: string }>(`${localBackendUrl}/transcribe`, { method: 'POST', body: form })
+    const controller = new AbortController()
+    const timeout = window.setTimeout(() => controller.abort(), mode === 'final' ? 20000 : 10000)
+    let result: { rawText: string }
+    try {
+      result = await api<{ rawText: string }>(`${localBackendUrl}/transcribe`, { method: 'POST', body: form, signal: controller.signal })
+    } finally {
+      window.clearTimeout(timeout)
+    }
     if (mode === 'preview' && !finalizingRef.current && sequence === transcriptionSequenceRef.current) setLiveTranscript(result.rawText)
     if (mode === 'final' && sequence === transcriptionSequenceRef.current) {
       setLiveTranscript(result.rawText)
@@ -241,6 +254,7 @@ function Interview({ sessionId, account, onSessionsChanged, onExit }: { sessionI
     if (!payload || payload.session.status === 'ended' || recordingRef.current || isBusy) return
     try {
       setError(''); setLiveTranscript(''); finalizingRef.current = false
+      commandTranscriptRef.current = ''
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true }); streamRef.current = stream
       const recorder = new MediaRecorder(stream); chunksRef.current = []; recorderRef.current = recorder
       recorder.ondataavailable = event => {
@@ -263,14 +277,35 @@ function Interview({ sessionId, account, onSessionsChanged, onExit }: { sessionI
     try {
       const blob = new Blob(chunksRef.current, { type: mimeType || 'audio/webm' })
       const result = await transcribe(blob, 'final')
-      if (result?.rawText.trim()) await send(result.rawText, 'voice')
-      else setSpeechState('ready')
-    } catch (caught) { setError(caught instanceof Error ? caught.message : '音声認識に失敗しました'); setSpeechState('error') }
+      const answer = result?.rawText.trim().replace(/(?:\s|^)(?:over|オーバー|おーばー)\s*$/i, '').trim()
+      if (answer) await send(answer, 'voice')
+      else {
+        const fallback = commandTranscriptRef.current.replace(/(?:\s|^)(?:over|オーバー|おーばー)\s*$/i, '').trim()
+        if (fallback) await send(fallback, 'voice')
+        else setSpeechState('ready')
+      }
+    } catch (caught) {
+      const fallback = commandTranscriptRef.current.replace(/(?:\s|^)(?:over|オーバー|おーばー)\s*$/i, '').trim()
+      if (fallback) {
+        try { await send(fallback, 'voice') }
+        catch (sendError) { setError(sendError instanceof Error ? sendError.message : '送信に失敗しました'); setSpeechState('error') }
+      } else {
+        setError(caught instanceof Error ? caught.message : '音声認識に失敗しました'); setSpeechState('error')
+      }
+    }
     finally { recorderRef.current = null; finalizingRef.current = false }
   }
 
   function stopRecording() {
-    if (recorderRef.current?.state === 'recording') { recordingRef.current = false; setIsRecording(false); recorderRef.current.stop() }
+    const recorder = recorderRef.current
+    if (!recorder) return
+    if (recorder.state !== 'inactive') {
+      recordingRef.current = false; setIsRecording(false)
+      // Flush the current timeslice before stopping. Without this, a quick
+      // hey → answer → over exchange can finish with an empty chunk list.
+      if (recorder.state === 'recording') recorder.requestData()
+      recorder.stop()
+    }
   }
 
   function toggleHandsFree() {
@@ -280,13 +315,18 @@ function Interview({ sessionId, account, onSessionsChanged, onExit }: { sessionI
     }
     const win = window as typeof window & { SpeechRecognition?: new () => SpeechRecognitionLike; webkitSpeechRecognition?: new () => SpeechRecognitionLike }
     const Constructor = win.SpeechRecognition || win.webkitSpeechRecognition
-    if (!Constructor) { setError('このブラウザは起動語検知に対応していません。録音ボタンは利用できます。'); return }
+    if (!Constructor) { setError('このブラウザは起動語検知に対応していません。マイクボタンをご利用ください。'); return }
     const recognition = new Constructor(); recognition.continuous = true; recognition.interimResults = true; recognition.lang = locale[payload?.session.language ?? 'ja']
     recognition.onresult = event => {
       let heard = ''; for (let i = event.resultIndex; i < event.results.length; i += 1) heard += event.results[i][0].transcript
-      const lowered = heard.toLowerCase().replace(/[,.!?。、！？]/g, '').trim(); setLiveTranscript(heard)
-      if (/hey\s*(whisper|ウィスパー|ウイスパー)/i.test(lowered) && !recordingRef.current) void startRecording()
-      if (/(^|\s)(over|オーバー)(\s|$)/i.test(lowered) && recordingRef.current) stopRecording()
+      const lowered = heard.toLowerCase().replace(/[,.!?。、！？]/g, '').replace(/\s+/g, ' ').trim(); setLiveTranscript(heard)
+      if (recordingRef.current && Array.from({ length: event.results.length - event.resultIndex }, (_, index) => event.results[event.resultIndex + index].isFinal).some(Boolean)) {
+        commandTranscriptRef.current = `${commandTranscriptRef.current} ${heard}`.trim()
+      }
+      const heardHey = /(?:\bhey\b|ヘイ|へい|エイ|えい)/i.test(lowered)
+      const heardOver = /(?:\bover\b|オーバー|オーバ|おーばー|おおばー)/i.test(lowered)
+      if (heardHey && !recordingRef.current) void startRecording()
+      if (heardOver && recordingRef.current) stopRecording()
     }
     recognition.onend = () => { if (recognitionRef.current === recognition) { try { recognition.start() } catch { /* browser restart race */ } } }
     recognition.onerror = () => setError('起動語の聞き取りを再試行しています')
@@ -310,7 +350,7 @@ function Interview({ sessionId, account, onSessionsChanged, onExit }: { sessionI
           ? { content: assistant.content, language: result.session.language }
           : null
         setStreamingMessageId(assistant.id)
-      } else setSpeechState(result.session.status === 'ended' ? 'ended' : handsFree ? 'wake' : 'ready')
+      } else setSpeechState(result.session.status === 'ended' ? 'ended' : 'ready')
     } catch (caught) { setError(caught instanceof Error ? caught.message : '送信できませんでした'); setSpeechState('error') }
     finally { if (manageBusy) setIsBusy(false) }
   }
@@ -331,16 +371,13 @@ function Interview({ sessionId, account, onSessionsChanged, onExit }: { sessionI
 
   if (!payload) return <div className="loading">セッションを読み込んでいます…</div>
   const latestQuestion = [...payload.messages].reverse().find(message => message.role === 'system')
-  const latestAnswer = [...payload.messages].reverse().find(message => message.role === 'user')
   const isThinking = speechState === 'thinking' && !streamingMessageId
-  return <section className="interview-layout">
-    <div className="interview-scene quiet-scene" aria-hidden="true"><div className="scene-glow" /></div>
-    <header className="interview-header"><div className="session-heading"><span className="eyebrow">LIVE INTERVIEW</span><h2>{payload.session.title}</h2><span>{languageLabels[payload.session.language]} · {account.displayName}</span></div><div className={`speech-status ${speechState}`}><i />{isThinking ? 'インタビュアーが考え中…' : labels[speechState]}</div><button className="danger-outline" onClick={endInterview} disabled={payload.session.status === 'ended'}>終了</button></header>
+  const interviewerIsActive = speechState === 'speaking' || isThinking || Boolean(streamingMessageId)
+  const userIsActive = speechState === 'recording' || speechState === 'transcribing'
+  return <section className={`interview-layout ${interviewerIsActive ? 'interviewer-active' : ''} ${userIsActive ? 'user-active' : ''}`}>
+    <div className="interview-scene alpaca-background" style={{ backgroundImage: `url(${alpacaBackground})` }} aria-hidden="true"><div className="scene-shade" /></div>
+    <header className="interview-header"><div className={`speech-status ${speechState}`}><i />{isThinking ? 'インタビュアーが考え中…' : labels[speechState]}</div><button className="danger-outline" onClick={endInterview} disabled={payload.session.status === 'ended'}>終了</button></header>
     <div className="interview-stage">
-      <div className="interviewer-card">
-        <div className="alpaca-icon" style={{ backgroundImage: `url(${factoryScene})` }} aria-label="アルパカのインタビュアー" />
-        <span className="operator-label">interviewer</span>
-      </div>
       <div className={`assistant-bubble ${isThinking ? 'thinking' : ''}`} aria-live="polite">
         <span>interviewer</span>
         {isThinking ? <div className="thinking-dots"><i /><i /><i /></div> : <p>{latestQuestion ? (displayOverrides[latestQuestion.id] || latestQuestion.content) : 'よろしくお願いします。'}</p>}
@@ -350,14 +387,11 @@ function Interview({ sessionId, account, onSessionsChanged, onExit }: { sessionI
     <footer className="composer">
       {editingId && <div className="editing-banner">過去の回答を編集中。この時点以降を再生成します。<button onClick={() => { setEditingId(null); setText('') }}>取消</button></div>}
       {error && <p className="error-message composer-error">{error}</p>}
-      {(text.trim() || latestAnswer) && <div className="user-reply-bubble"><span>You</span><p>{text.trim() || latestAnswer?.content}</p></div>}
-      <textarea id="answer" value={text} onChange={event => setText(event.target.value)} onFocus={() => { if (recordingRef.current) stopRecording() }} onKeyDown={event => {
+      <textarea id="answer" value={isRecording || speechState === 'transcribing' ? liveTranscript : text} onChange={event => setText(event.target.value)} onFocus={() => { if (recordingRef.current) stopRecording() }} onKeyDown={event => {
         const nativeEvent = event.nativeEvent as KeyboardEvent
         if (event.key === 'Enter' && !event.shiftKey && !nativeEvent.isComposing && nativeEvent.keyCode !== 229) { event.preventDefault(); void sendText() }
       }} placeholder={payload.session.status === 'ended' ? 'このインタビューは終了しました' : '回答を入力（変換中はEnterで確定／確定後Enterで送信）'} disabled={payload.session.status === 'ended' || isBusy} />
-      <div className="composer-actions"><button className={handsFree ? 'active-voice' : ''} onClick={toggleHandsFree} disabled={payload.session.status === 'ended' || isBusy}>⌁ {handsFree ? '起動語の待受を停止' : 'ハンズフリー待受を開始'}</button><button onClick={isRecording ? stopRecording : startRecording} disabled={payload.session.status === 'ended' || isBusy}>{isRecording ? '■ 録音して送信' : '● 今すぐ録音'}</button><button className="primary send" onClick={() => void sendText()} disabled={!text.trim() || payload.session.status === 'ended' || isBusy}>{isBusy ? '処理中…' : 'テキスト送信'}</button></div>
-      <p className="voice-help">音声で回答するか、下の入力欄をバックアップとして使えます。ハンズフリーは「hey whisper」で録音開始、「over」で停止します。</p>
-      <p className="privacy-note">音声はローカルWhisperで文字起こしされ、そのテキストをAIへ送信します。</p>
+      <div className="composer-actions minimal-actions"><button className={`handsfree-button ${handsFree ? 'active' : ''}`} onClick={toggleHandsFree} disabled={payload.session.status === 'ended' || isBusy}>{handsFree ? 'hey待受中（overで終了）' : 'heyで開始'}</button><button className="primary send" onClick={() => void sendText()} disabled={!text.trim() || payload.session.status === 'ended' || isBusy}>{isBusy ? '送信中…' : '送信'}</button></div>
     </footer>
   </section>
 }
@@ -386,6 +420,12 @@ function App() {
   useEffect(() => { if (account?.role === 'admin') setView('admin') }, [account])
 
   async function createSession() {
+    // Ask for microphone access from the user's click, so the interview view can
+    // enter hey-waiting immediately instead of prompting during the transition.
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      stream.getTracks().forEach(track => track.stop())
+    } catch { /* Text input remains available when microphone access is denied. */ }
     const result = await api<SessionPayload>('/api/sessions', jsonInit('POST', { language })); await api(`/api/sessions/${result.session.id}/start`, { method: 'POST' }); setSelectedId(result.session.id); setView('interview'); await loadSessions()
   }
   async function signOut() { await api('/api/auth/logout', { method: 'POST' }); setAccount(null); setSessions([]); setSelectedId(null); initialSessionResolved.current = false }
@@ -398,7 +438,7 @@ function App() {
       <nav><p>セッション</p>{sessions.map(item => <button key={item.id} className={selectedId === item.id && view === 'interview' ? 'selected' : ''} onClick={() => { setSelectedId(item.id); setView('interview') }}><span>{item.title}</span><small>{languageLabels[item.language]} · {item.status}</small></button>)}</nav>
       <div className="sidebar-bottom"><div className="account-chip"><span className="avatar small">{account.displayName.slice(0, 1)}</span><div><strong>{account.displayName}</strong><small>{account.id}</small></div><button title="ログアウト" onClick={signOut}>↪</button></div></div>
     </aside>
-    <main className="workspace">{view === 'admin' ? <AdminPanel onOpenSession={id => { setSelectedId(id); setView('interview') }} /> : selectedId ? <Interview key={selectedId} sessionId={selectedId} account={account} onSessionsChanged={loadSessions} onExit={() => setSelectedId(null)} /> : <div className="empty-state"><div>✦</div><h2>インタビューを始めましょう</h2><p>言語を選び、「新しいインタビュー」を押してください。</p><button className="primary" onClick={createSession}>新しいインタビュー</button></div>}</main>
+    <main className="workspace">{view === 'admin' ? <AdminPanel onOpenSession={id => { setSelectedId(id); setView('interview') }} /> : selectedId ? <Interview key={selectedId} sessionId={selectedId} onSessionsChanged={loadSessions} onExit={() => setSelectedId(null)} /> : <div className="empty-state"><div>✦</div><h2>インタビューを始めましょう</h2><p>言語を選び、「新しいインタビュー」を押してください。</p><button className="primary" onClick={createSession}>新しいインタビュー</button></div>}</main>
   </div>
 }
 

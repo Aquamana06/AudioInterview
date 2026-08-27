@@ -1,3 +1,4 @@
+import asyncio
 import os
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
@@ -7,7 +8,7 @@ from .transcription.local_whisper import LocalWhisper
 
 
 whisper = LocalWhisper(
-    os.getenv("FASTER_WHISPER_MODEL", "large-v3"),
+    os.getenv("FASTER_WHISPER_MODEL", "small"),
     os.getenv("FASTER_WHISPER_DEVICE", "auto"),
     os.getenv("FASTER_WHISPER_COMPUTE_TYPE", "auto"),
 )
@@ -41,7 +42,11 @@ async def transcribe(
     audio_bytes = await audio.read()
     if not audio_bytes:
         raise HTTPException(status_code=400, detail="Audio file is empty")
-    raw_text = whisper.transcribe(audio_bytes, audio.filename or "audio.webm", language)
+    # faster-whisper is synchronous and can take a while on CPU, so keep it
+    # out of FastAPI's event loop while the model loads or runs inference.
+    raw_text = await asyncio.to_thread(
+        whisper.transcribe, audio_bytes, audio.filename or "audio.webm", language
+    )
     return {"rawText": raw_text}
 
 

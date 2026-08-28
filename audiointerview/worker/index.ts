@@ -67,6 +67,7 @@ async function processMessage(
   session: InterviewSession,
   content: string,
   inputMode: InputMode,
+  ctx: Pick<ExecutionContext, 'waitUntil'>,
 ) {
   const saved = await getState(env, session.id);
   const state = saved?.state ?? initialState();
@@ -92,7 +93,7 @@ async function processMessage(
     await env.RI_db.prepare("UPDATE interview_sessions SET status = 'ended', ended_at = ?, updated_at = ? WHERE id = ?")
       .bind(nowIso(), nowIso(), session.id)
       .run();
-    await finalizeMemory(env, session);
+    ctx.waitUntil(finalizeMemory(env, session).catch((error) => console.error('Failed to finalize session memory', error)));
   }
   return sessionPayload(env, { ...session, status: result.stateLabel === 'end' ? 'ended' : session.status });
 }
@@ -132,7 +133,7 @@ async function replayAfterEdit(env: RuntimeEnv, session: InterviewSession, messa
   return sessionPayload(env, { ...session, status: 'running', ended_at: null });
 }
 
-async function handleApi(request: Request, env: RuntimeEnv) {
+async function handleApi(request: Request, env: RuntimeEnv, ctx: Pick<ExecutionContext, 'waitUntil'>) {
   const url = new URL(request.url);
   const path = url.pathname;
 
@@ -234,7 +235,7 @@ async function handleApi(request: Request, env: RuntimeEnv) {
       const content = body.maskedText ? prepareForCloudLlm(body.maskedText).maskedText.trim() : '';
       if (!content) throw new HttpError('maskedText is required');
       if (body.editMessageId) return json(await replayAfterEdit(env, session, body.editMessageId, content));
-      return json(await processMessage(env, session, content, body.inputMode === 'voice' ? 'voice' : 'text'));
+      return json(await processMessage(env, session, content, body.inputMode === 'voice' ? 'voice' : 'text', ctx));
     }
     if (request.method === 'POST' && action === 'end') {
       if (session.status !== 'ended') {
@@ -242,7 +243,7 @@ async function handleApi(request: Request, env: RuntimeEnv) {
         await env.RI_db.prepare("UPDATE interview_sessions SET status = 'ended', ended_at = ?, updated_at = ? WHERE id = ?")
           .bind(nowIso(), nowIso(), session.id)
           .run();
-        await finalizeMemory(env, session);
+        ctx.waitUntil(finalizeMemory(env, session).catch((error) => console.error('Failed to finalize session memory', error)));
       }
       return json(await sessionPayload(env, { ...session, status: 'ended', ended_at: nowIso() }));
     }
@@ -287,9 +288,9 @@ async function handleApi(request: Request, env: RuntimeEnv) {
 }
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     try {
-      return await handleApi(request, env as RuntimeEnv);
+      return await handleApi(request, env as RuntimeEnv, ctx);
     } catch (caught) {
       if (caught instanceof HttpError) return error(caught.message, caught.status);
       if (caught instanceof Error && /UNIQUE constraint/.test(caught.message)) return error('That ID already exists', 409);

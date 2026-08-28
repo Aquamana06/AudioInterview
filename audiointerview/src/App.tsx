@@ -192,7 +192,7 @@ function Interview({ sessionId, onSessionsChanged, onExit }: { sessionId: string
     speechSynthesis.cancel()
     const parts = value.match(/[^。！？.!?]+[。！？.!?]?/g)?.map(part => part.trim()).filter(Boolean) ?? [value]
     parts.forEach((part, index) => {
-      const utterance = new SpeechSynthesisUtterance(part); utterance.lang = locale[language]; utterance.rate = 1.9
+      const utterance = new SpeechSynthesisUtterance(part); utterance.lang = locale[language]; utterance.rate = 1.2; utterance.pitch = 1.0
       utterance.onstart = () => setSpeechState('speaking')
       utterance.onend = () => {
         if (generation === speechGenerationRef.current && index === parts.length - 1) {
@@ -232,6 +232,9 @@ function Interview({ sessionId, onSessionsChanged, onExit }: { sessionId: string
     if (!streamingMessageId || !payload) return
     const message = payload.messages.find(item => item.id === streamingMessageId)
     if (!message) return
+    const pendingSpeech = pendingSpeechRef.current
+    pendingSpeechRef.current = null
+    if (pendingSpeech) speak(pendingSpeech.content, pendingSpeech.language)
     let cursor = 0
     const timer = window.setInterval(() => {
       cursor = Math.min(message.content.length, cursor + 2)
@@ -239,12 +242,9 @@ function Interview({ sessionId, onSessionsChanged, onExit }: { sessionId: string
       if (cursor >= message.content.length) {
         window.clearInterval(timer)
         setStreamingMessageId(null)
-        const pendingSpeech = pendingSpeechRef.current
-        pendingSpeechRef.current = null
-        if (pendingSpeech) speak(pendingSpeech.content, pendingSpeech.language)
-        else setSpeechState(payload.session.status === 'ended' ? 'ended' : 'ready')
+        if (!pendingSpeech) setSpeechState(payload.session.status === 'ended' ? 'ended' : 'ready')
       }
-    }, 60)
+    }, 90)
     return () => window.clearInterval(timer)
   }, [streamingMessageId, payload, speak])
   useEffect(() => () => {

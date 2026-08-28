@@ -19,6 +19,7 @@ import { generateSessionStarter, runContextualInterviewTurn } from './longitudin
 import { loadParticipantMemory, saveSessionMemory, selectRelevantMemory } from './longitudinal-memory.js';
 import { extractSessionMemory } from './longitudinal-openai.js';
 import { openaiStatus, transcribeAudio } from './openai.js';
+import { prepareForCloudLlm } from './terminology.js';
 import { generateProfileInterviewStarter, runProfileInterviewTurn } from './profile-interview-agent.js';
 import type { InputMode, InterviewSession, Language, RuntimeEnv } from './types.js';
 
@@ -142,7 +143,7 @@ async function handleApi(request: Request, env: RuntimeEnv) {
     const body = await jsonBody<{ text?: string }>(request);
     const text = body.text?.trim() ?? '';
     if (!text) throw new HttpError('text is required');
-    return json({ normalizedText: text, maskedText: text });
+    return json(prepareForCloudLlm(text));
   }
 
   if (request.method === 'POST' && path === '/api/local/transcribe') {
@@ -152,7 +153,7 @@ async function handleApi(request: Request, env: RuntimeEnv) {
     if (!(file instanceof File)) throw new HttpError('Audio file is required');
     const languageValue = form.get('language');
     const rawText = await transcribeAudio(env, file, typeof languageValue === 'string' ? languageValue : undefined);
-    return json({ rawText, normalizedText: rawText, maskedText: rawText });
+    return json({ rawText, ...prepareForCloudLlm(rawText) });
   }
 
   if (request.method === 'POST' && path === '/api/auth/login') {
@@ -230,7 +231,7 @@ async function handleApi(request: Request, env: RuntimeEnv) {
     if (request.method === 'POST' && action === 'messages') {
       if (session.status === 'ended') throw new HttpError('Session has ended', 409);
       const body = await jsonBody<{ maskedText?: string; inputMode?: InputMode; editMessageId?: string }>(request);
-      const content = body.maskedText?.trim();
+      const content = body.maskedText ? prepareForCloudLlm(body.maskedText).maskedText.trim() : '';
       if (!content) throw new HttpError('maskedText is required');
       if (body.editMessageId) return json(await replayAfterEdit(env, session, body.editMessageId, content));
       return json(await processMessage(env, session, content, body.inputMode === 'voice' ? 'voice' : 'text'));

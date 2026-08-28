@@ -237,7 +237,7 @@ function Interview({ sessionId, onSessionsChanged, onExit }: { sessionId: string
     const form = new FormData(); form.append('audio', blob, 'interview.webm'); form.append('language', payload.session.language)
     const controller = new AbortController()
     const timeout = window.setTimeout(() => controller.abort(), mode === 'final' ? 20000 : 10000)
-    let result: { rawText: string }
+    let result: { rawText: string; normalizedText?: string; maskedText?: string }
     try {
       result = await api<{ rawText: string }>(`${localBackendUrl}/transcribe`, { method: 'POST', body: form, signal: controller.signal })
     } finally {
@@ -277,8 +277,8 @@ function Interview({ sessionId, onSessionsChanged, onExit }: { sessionId: string
     try {
       const blob = new Blob(chunksRef.current, { type: mimeType || 'audio/webm' })
       const result = await transcribe(blob, 'final')
-      const answer = result?.rawText.trim().replace(/(?:\s|^)(?:over|オーバー|おーばー)\s*$/i, '').trim()
-      if (answer) await send(answer, 'voice')
+      const answer = (result?.maskedText ?? result?.rawText ?? '').trim().replace(/(?:\s|^)(?:over|オーバー|おーばー)\s*$/i, '').trim()
+      if (answer) await send(answer, 'voice', result?.rawText)
       else {
         const fallback = commandTranscriptRef.current.replace(/(?:\s|^)(?:over|オーバー|おーばー)\s*$/i, '').trim()
         if (fallback) await send(fallback, 'voice')
@@ -339,7 +339,8 @@ function Interview({ sessionId, onSessionsChanged, onExit }: { sessionId: string
     setSpeechState('thinking'); setError('')
     try {
       const beforeIds = new Set(payload.messages.map(message => message.id))
-      const result = await api<SessionPayload>(`/api/sessions/${payload.session.id}/messages`, jsonInit('POST', { maskedText: content, inputMode, editMessageId: editingId || undefined }))
+      const prepared = await api<{ normalizedText: string; maskedText: string }>('/api/local/mask-text', jsonInit('POST', { text: content }))
+      const result = await api<SessionPayload>(`/api/sessions/${payload.session.id}/messages`, jsonInit('POST', { maskedText: prepared.maskedText, inputMode, editMessageId: editingId || undefined }))
       const newUser = result.messages.find(message => message.role === 'user' && !beforeIds.has(message.id))
       if (newUser && displayText) setDisplayOverrides(current => ({ ...current, [newUser.id]: displayText }))
       setPayload(result); setText(''); setEditingId(null); onSessionsChanged()

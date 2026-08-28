@@ -5,6 +5,8 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
 from .transcription.local_whisper import LocalWhisper
+from .privacy.dictionary_masker import mask_confidential_terms
+from .terminology import normalize_technical_terms
 
 
 whisper = LocalWhisper(
@@ -47,7 +49,24 @@ async def transcribe(
     raw_text = await asyncio.to_thread(
         whisper.transcribe, audio_bytes, audio.filename or "audio.webm", language
     )
-    return {"rawText": raw_text}
+    normalized_text = normalize_technical_terms(raw_text)
+    return {
+        "rawText": raw_text,
+        "normalizedText": normalized_text,
+        "maskedText": mask_confidential_terms(normalized_text),
+    }
+
+
+@app.post("/mask-text")
+async def mask_text(payload: dict[str, str]) -> dict[str, str]:
+    text = payload.get("text", "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="text is required")
+    normalized_text = normalize_technical_terms(text)
+    return {
+        "normalizedText": normalized_text,
+        "maskedText": mask_confidential_terms(normalized_text),
+    }
 
 
 if __name__ == "__main__":

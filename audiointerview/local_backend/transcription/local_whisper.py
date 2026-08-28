@@ -4,6 +4,8 @@ from tempfile import NamedTemporaryFile
 import ctranslate2
 from faster_whisper import WhisperModel
 
+from ..terminology import TRANSCRIPTION_PROMPT
+
 
 class LocalWhisper:
     def __init__(self, model_name: str, device: str = "auto", compute_type: str = "auto") -> None:
@@ -35,5 +37,6 @@ class LocalWhisper:
                 temporary.name,
                 language=language or None,
                 vad_filter=True,
+                initial_prompt=TRANSCRIPTION_PROMPT,
             )
             return "".join(segment.text for segment in segments).strip()

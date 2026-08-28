@@ -26,7 +26,7 @@ type SpeechRecognitionLike = {
 }
 
 const labels: Record<SpeechState, string> = {
-  ready: 'Ready', wake: 'Listening for “hey whisper”', recording: 'Recording', transcribing: 'Local Whisper transcribing',
+  ready: 'Ready', wake: 'Waiting for the next question', recording: 'Recording', transcribing: 'Local Whisper transcribing',
   thinking: 'Interviewer thinking', speaking: 'Speaking', ended: 'Ended', error: 'Error',
 }
 const languageLabels: Record<Language, string> = { ja: '日本語', en: 'English', de: 'Deutsch' }
@@ -175,19 +175,37 @@ function Interview({ sessionId, onSessionsChanged, onExit }: { sessionId: string
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null)
   const handsFreeRef = useRef(false)
   const commandTranscriptRef = useRef('')
-  const previewBusyRef = useRef(false)
   const finalizingRef = useRef(false)
   const transcriptionSequenceRef = useRef(0)
   const pendingSpeechRef = useRef<{ content: string; language: Language } | null>(null)
   const startRecordingRef = useRef<() => void>(() => undefined)
+  const initialSpeechStartedRef = useRef(false)
+  const suppressRecognitionRestartRef = useRef(false)
+  const speechGenerationRef = useRef(0)
 
   const speak = useCallback((value: string, language: Language) => {
-    speechSynthesis.cancel(); const utterance = new SpeechSynthesisUtterance(value); utterance.lang = locale[language]
-    utterance.onstart = () => setSpeechState('speaking')
-    utterance.onend = () => {
-      setSpeechState('ready')
+    const generation = ++speechGenerationRef.current
+    if (handsFreeRef.current) {
+      suppressRecognitionRestartRef.current = true
+      recognitionRef.current?.stop()
     }
-    speechSynthesis.speak(utterance)
+    speechSynthesis.cancel()
+    const parts = value.match(/[^。！？.!?]+[。！？.!?]?/g)?.map(part => part.trim()).filter(Boolean) ?? [value]
+    parts.forEach((part, index) => {
+      const utterance = new SpeechSynthesisUtterance(part); utterance.lang = locale[language]; utterance.rate = 1.9
+      utterance.onstart = () => setSpeechState('speaking')
+      utterance.onend = () => {
+        if (generation === speechGenerationRef.current && index === parts.length - 1) {
+          suppressRecognitionRestartRef.current = false
+          window.setTimeout(() => {
+            try { recognitionRef.current?.start() } catch { /* already running */ }
+          }, 100)
+          setSpeechState('ready')
+          if (handsFreeRef.current) window.setTimeout(() => startRecordingRef.current(), 0)
+        }
+      }
+      speechSynthesis.speak(utterance)
+    })
   }, [])
 
   const load = useCallback(async () => {
@@ -201,6 +219,15 @@ function Interview({ sessionId, onSessionsChanged, onExit }: { sessionId: string
     }, 0)
     return () => window.clearTimeout(timer)
   }, [payload?.session.id, payload?.session.status])
+  useEffect(() => {
+    if (!payload || initialSpeechStartedRef.current || payload.session.status === 'ended') return
+    const opening = payload.messages.length === 1 && payload.messages[0].role === 'system' ? payload.messages[0] : null
+    if (!opening) return
+    initialSpeechStartedRef.current = true
+    setDisplayOverrides(current => ({ ...current, [opening.id]: '' }))
+    pendingSpeechRef.current = { content: opening.content, language: payload.session.language }
+    setStreamingMessageId(opening.id)
+  }, [payload])
   useEffect(() => {
     if (!streamingMessageId || !payload) return
     const message = payload.messages.find(item => item.id === streamingMessageId)
@@ -231,20 +258,19 @@ function Interview({ sessionId, onSessionsChanged, onExit }: { sessionId: string
     gain.gain.exponentialRampToValueAtTime(0.001, context.currentTime + duration); oscillator.stop(context.currentTime + duration)
   }
 
-  async function transcribe(blob: Blob, mode: 'preview' | 'final') {
+  async function transcribe(blob: Blob) {
     if (!blob.size || !payload) return null
     const sequence = ++transcriptionSequenceRef.current
     const form = new FormData(); form.append('audio', blob, 'interview.webm'); form.append('language', payload.session.language)
     const controller = new AbortController()
-    const timeout = window.setTimeout(() => controller.abort(), mode === 'final' ? 20000 : 10000)
+    const timeout = window.setTimeout(() => controller.abort(), 20000)
     let result: { rawText: string; normalizedText?: string; maskedText?: string }
     try {
       result = await api<{ rawText: string }>(`${localBackendUrl}/transcribe`, { method: 'POST', body: form, signal: controller.signal })
     } finally {
       window.clearTimeout(timeout)
     }
-    if (mode === 'preview' && !finalizingRef.current && sequence === transcriptionSequenceRef.current) setLiveTranscript(result.rawText)
-    if (mode === 'final' && sequence === transcriptionSequenceRef.current) {
+    if (sequence === transcriptionSequenceRef.current) {
       setLiveTranscript(result.rawText)
     }
     return result
@@ -260,13 +286,9 @@ function Interview({ sessionId, onSessionsChanged, onExit }: { sessionId: string
       recorder.ondataavailable = event => {
         if (!event.data.size) return
         chunksRef.current.push(event.data)
-        if (recorder.state === 'recording' && !previewBusyRef.current && !finalizingRef.current) {
-          previewBusyRef.current = true
-          void transcribe(new Blob([...chunksRef.current], { type: recorder.mimeType || 'audio/webm' }), 'preview').catch(() => undefined).finally(() => { previewBusyRef.current = false })
-        }
       }
       recorder.onstop = () => { void finishRecording(recorder.mimeType) }
-      recorder.start(3000); recordingRef.current = true; setIsRecording(true); setSpeechState('recording'); beep(880)
+      recorder.start(); recordingRef.current = true; setIsRecording(true); setSpeechState('recording'); beep(880)
     } catch (caught) { setError(caught instanceof Error ? caught.message : 'マイクを開始できません'); setSpeechState('error') }
   }
   startRecordingRef.current = startRecording
@@ -276,9 +298,9 @@ function Interview({ sessionId, onSessionsChanged, onExit }: { sessionId: string
     streamRef.current?.getTracks().forEach(track => track.stop()); streamRef.current = null; setSpeechState('transcribing'); beep(520, 0.3)
     try {
       const blob = new Blob(chunksRef.current, { type: mimeType || 'audio/webm' })
-      const result = await transcribe(blob, 'final')
+      const result = await transcribe(blob)
       const answer = (result?.maskedText ?? result?.rawText ?? '').trim().replace(/(?:\s|^)(?:over|オーバー|おーばー)\s*$/i, '').trim()
-      if (answer) await send(answer, 'voice', result?.rawText)
+      if (answer) await send(answer, 'voice', result?.rawText, true, result?.maskedText)
       else {
         const fallback = commandTranscriptRef.current.replace(/(?:\s|^)(?:over|オーバー|おーばー)\s*$/i, '').trim()
         if (fallback) await send(fallback, 'voice')
@@ -301,9 +323,6 @@ function Interview({ sessionId, onSessionsChanged, onExit }: { sessionId: string
     if (!recorder) return
     if (recorder.state !== 'inactive') {
       recordingRef.current = false; setIsRecording(false)
-      // Flush the current timeslice before stopping. Without this, a quick
-      // hey → answer → over exchange can finish with an empty chunk list.
-      if (recorder.state === 'recording') recorder.requestData()
       recorder.stop()
     }
   }
@@ -319,27 +338,31 @@ function Interview({ sessionId, onSessionsChanged, onExit }: { sessionId: string
     const recognition = new Constructor(); recognition.continuous = true; recognition.interimResults = true; recognition.lang = locale[payload?.session.language ?? 'ja']
     recognition.onresult = event => {
       let heard = ''; for (let i = event.resultIndex; i < event.results.length; i += 1) heard += event.results[i][0].transcript
-      const lowered = heard.toLowerCase().replace(/[,.!?。、！？]/g, '').replace(/\s+/g, ' ').trim(); setLiveTranscript(heard)
+      const lowered = heard.toLowerCase().replace(/[,.!?。、！？]/g, '').replace(/\s+/g, ' ').trim()
+      if (recordingRef.current) setLiveTranscript(heard)
       if (recordingRef.current && Array.from({ length: event.results.length - event.resultIndex }, (_, index) => event.results[event.resultIndex + index].isFinal).some(Boolean)) {
         commandTranscriptRef.current = `${commandTranscriptRef.current} ${heard}`.trim()
       }
-      const heardHey = /(?:\bhey\b|ヘイ|へい|エイ|えい)/i.test(lowered)
       const heardOver = /(?:\bover\b|オーバー|オーバ|おーばー|おおばー)/i.test(lowered)
-      if (heardHey && !recordingRef.current) void startRecording()
       if (heardOver && recordingRef.current) stopRecording()
     }
-    recognition.onend = () => { if (recognitionRef.current === recognition) { try { recognition.start() } catch { /* browser restart race */ } } }
+    recognition.onend = () => {
+      if (suppressRecognitionRestartRef.current) { suppressRecognitionRestartRef.current = false; return }
+      if (recognitionRef.current === recognition) { try { recognition.start() } catch { /* browser restart race */ } }
+    }
     recognition.onerror = () => setError('起動語の聞き取りを再試行しています')
     recognitionRef.current = recognition; recognition.start(); handsFreeRef.current = true; setHandsFree(true); setSpeechState('wake')
   }
 
-  async function send(content: string, inputMode: 'text' | 'voice', displayText?: string, manageBusy = true) {
+  async function send(content: string, inputMode: 'text' | 'voice', displayText?: string, manageBusy = true, preparedMaskedText?: string) {
     if (!payload || !content.trim()) return
     if (manageBusy) setIsBusy(true)
     setSpeechState('thinking'); setError('')
     try {
       const beforeIds = new Set(payload.messages.map(message => message.id))
-      const prepared = await api<{ normalizedText: string; maskedText: string }>('/api/local/mask-text', jsonInit('POST', { text: content }))
+      const prepared = preparedMaskedText
+        ? { maskedText: preparedMaskedText }
+        : await api<{ normalizedText: string; maskedText: string }>('/api/local/mask-text', jsonInit('POST', { text: content }))
       const result = await api<SessionPayload>(`/api/sessions/${payload.session.id}/messages`, jsonInit('POST', { maskedText: prepared.maskedText, inputMode, editMessageId: editingId || undefined }))
       const newUser = result.messages.find(message => message.role === 'user' && !beforeIds.has(message.id))
       if (newUser && displayText) setDisplayOverrides(current => ({ ...current, [newUser.id]: displayText }))
@@ -347,7 +370,7 @@ function Interview({ sessionId, onSessionsChanged, onExit }: { sessionId: string
       const assistant = [...result.messages].reverse().find(message => message.role === 'system')
       if (assistant) {
         setDisplayOverrides(current => ({ ...current, [assistant.id]: '' }))
-        pendingSpeechRef.current = inputMode === 'voice' && result.session.status !== 'ended'
+        pendingSpeechRef.current = handsFreeRef.current && result.session.status !== 'ended'
           ? { content: assistant.content, language: result.session.language }
           : null
         setStreamingMessageId(assistant.id)
@@ -392,7 +415,7 @@ function Interview({ sessionId, onSessionsChanged, onExit }: { sessionId: string
         const nativeEvent = event.nativeEvent as KeyboardEvent
         if (event.key === 'Enter' && !event.shiftKey && !nativeEvent.isComposing && nativeEvent.keyCode !== 229) { event.preventDefault(); void sendText() }
       }} placeholder={payload.session.status === 'ended' ? 'このインタビューは終了しました' : '回答を入力（変換中はEnterで確定／確定後Enterで送信）'} disabled={payload.session.status === 'ended' || isBusy} />
-      <div className="composer-actions minimal-actions"><button className={`handsfree-button ${handsFree ? 'active' : ''}`} onClick={toggleHandsFree} disabled={payload.session.status === 'ended' || isBusy}>{handsFree ? 'hey待受中（overで終了）' : 'heyで開始'}</button><button className="primary send" onClick={() => void sendText()} disabled={!text.trim() || payload.session.status === 'ended' || isBusy}>{isBusy ? '送信中…' : '送信'}</button></div>
+      <div className="composer-actions minimal-actions"><button className={`handsfree-button ${handsFree ? 'active' : ''}`} onClick={toggleHandsFree} disabled={payload.session.status === 'ended' || isBusy}>{handsFree ? '自動録音中（停止）' : '自動録音を開始'}</button><button className="primary send" onClick={() => void sendText()} disabled={!text.trim() || payload.session.status === 'ended' || isBusy}>{isBusy ? '送信中…' : '送信'}</button></div>
     </footer>
   </section>
 }

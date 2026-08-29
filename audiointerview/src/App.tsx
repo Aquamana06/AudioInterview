@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import QRCode from 'qrcode'
 import './App.css'
 import alpacaBackground from './assets/interview-alpaca-background.png'
-import { preloadBrowserWhisper, transcribeInBrowser } from './browserWhisper'
+import { detectOverInBrowser, preloadBrowserWhisper, transcribeInBrowser } from './browserWhisper'
 import { prepareLocalTranscript } from './terminology'
 
 type Language = 'ja' | 'en' | 'de'
@@ -188,6 +188,13 @@ function Interview({ sessionId, onSessionsChanged, onExit }: { sessionId: string
   const suppressRecognitionRestartRef = useRef(false)
   const speechGenerationRef = useRef(0)
   const busyRef = useRef(false)
+  const overDetectorRef = useRef<{
+    context: AudioContext
+    source: MediaStreamAudioSourceNode
+    processor: ScriptProcessorNode
+    samples: number[]
+    processing: boolean
+  } | null>(null)
 
   const speak = useCallback((value: string, language: Language) => {
     const generation = ++speechGenerationRef.current
@@ -275,8 +282,49 @@ function Interview({ sessionId, onSessionsChanged, onExit }: { sessionId: string
   }, [streamingMessageId, payload, speak])
   useEffect(() => () => {
     const recognition = recognitionRef.current; recognitionRef.current = null; recognition?.stop()
+    stopOverDetector()
     streamRef.current?.getTracks().forEach(track => track.stop())
   }, [])
+
+  function stopOverDetector() {
+    const detector = overDetectorRef.current
+    overDetectorRef.current = null
+    if (!detector) return
+    detector.processor.onaudioprocess = null
+    detector.processor.disconnect()
+    detector.source.disconnect()
+    void detector.context.close()
+  }
+
+  function startOverDetector(stream: MediaStream, language: Language) {
+    stopOverDetector()
+    const context = new AudioContext()
+    const source = context.createMediaStreamSource(stream)
+    const processor = context.createScriptProcessor(4096, 1, 1)
+    const detector = { context, source, processor, samples: [] as number[], processing: false }
+    overDetectorRef.current = detector
+    processor.onaudioprocess = event => {
+      if (overDetectorRef.current !== detector) return
+      detector.samples.push(...event.inputBuffer.getChannelData(0))
+      const maxSamples = Math.round(context.sampleRate * 4)
+      if (detector.samples.length > maxSamples) detector.samples.splice(0, detector.samples.length - maxSamples)
+      if (detector.processing || detector.samples.length < context.sampleRate * 1.2) return
+      detector.processing = true
+      const snapshot = new Float32Array(detector.samples)
+      void detectOverInBrowser(snapshot, context.sampleRate, language)
+        .then(found => {
+          if (found && recordingRef.current) {
+            stopOverDetector()
+            stopRecording()
+          }
+        })
+        .catch(error => console.warn('[AudioInterview][Whisper] local over detection failed', error))
+        .finally(() => { detector.processing = false })
+    }
+    source.connect(processor)
+    const sink = context.createGain(); sink.gain.value = 0; processor.connect(sink); sink.connect(context.destination)
+    void context.resume()
+  }
 
   function beep(frequency: number, duration = 0.16) {
     const context = new AudioContext(); const oscillator = context.createOscillator(); const gain = context.createGain()
@@ -321,12 +369,14 @@ function Interview({ sessionId, onSessionsChanged, onExit }: { sessionId: string
       }
       recorder.onstop = () => { void finishRecording(recorder.mimeType) }
       recorder.start(); recordingRef.current = true; setIsRecording(true); setSpeechState('recording'); beep(880)
+      startOverDetector(stream, payload.session.language)
     } catch (caught) { setError(caught instanceof Error ? caught.message : 'マイクを開始できません'); setSpeechState('error') }
   }
   startRecordingRef.current = startRecording
 
   async function finishRecording(mimeType: string) {
     recordingRef.current = false; setIsRecording(false); finalizingRef.current = true
+    stopOverDetector()
     streamRef.current?.getTracks().forEach(track => track.stop()); streamRef.current = null; setSpeechState('transcribing'); beep(520, 0.3)
     try {
       const blob = new Blob(chunksRef.current, { type: mimeType || 'audio/webm' })
@@ -359,33 +409,15 @@ function Interview({ sessionId, onSessionsChanged, onExit }: { sessionId: string
 
   function toggleHandsFree() {
     if (handsFree) {
-      // Safari may not recognize the spoken "over" command reliably. Ensure
-      // that turning off hands-free also finalizes an active recording so the
-      // Whisper pipeline is actually invoked.
       if (recordingRef.current) stopRecording()
-      const recognition = recognitionRef.current; recognitionRef.current = null; recognition?.stop()
       handsFreeRef.current = false; setHandsFree(false); if (!recordingRef.current) setSpeechState('ready'); return
     }
-    const win = window as typeof window & { SpeechRecognition?: new () => SpeechRecognitionLike; webkitSpeechRecognition?: new () => SpeechRecognitionLike }
-    const Constructor = win.SpeechRecognition || win.webkitSpeechRecognition
-    if (!Constructor) { setError('このブラウザは起動語検知に対応していません。マイクボタンをご利用ください。'); return }
-    const recognition = new Constructor(); recognition.continuous = true; recognition.interimResults = true; recognition.lang = locale[payload?.session.language ?? 'ja']
-    recognition.onresult = event => {
-      let heard = ''; for (let i = event.resultIndex; i < event.results.length; i += 1) heard += event.results[i][0].transcript
-      const lowered = heard.toLowerCase().replace(/[,.!?。、！？]/g, '').replace(/\s+/g, ' ').trim()
-      if (recordingRef.current) setLiveTranscript(heard)
-      if (recordingRef.current && Array.from({ length: event.results.length - event.resultIndex }, (_, index) => event.results[event.resultIndex + index].isFinal).some(Boolean)) {
-        commandTranscriptRef.current = `${commandTranscriptRef.current} ${heard}`.trim()
-      }
-      const heardOver = /(?:\bover\b|オーバー|オーバ|おーばー|おおばー)/i.test(lowered)
-      if (heardOver && recordingRef.current) stopRecording()
+    // Keep recognition fully local: recording starts automatically and a
+    // short rolling PCM window is checked by the local Whisper runtime.
+    handsFreeRef.current = true; setHandsFree(true); setSpeechState('wake')
+    if (!streamingMessageId && speechState === 'ready' && !recordingRef.current) {
+      window.setTimeout(() => { void startRecording() }, 0)
     }
-    recognition.onend = () => {
-      if (suppressRecognitionRestartRef.current) { suppressRecognitionRestartRef.current = false; return }
-      if (recognitionRef.current === recognition) { try { recognition.start() } catch { /* browser restart race */ } }
-    }
-    recognition.onerror = () => setError('起動語の聞き取りを再試行しています')
-    recognitionRef.current = recognition; recognition.start(); handsFreeRef.current = true; setHandsFree(true); setSpeechState('wake')
   }
 
   async function send(content: string, inputMode: 'text' | 'voice', displayText?: string, manageBusy = true, preparedMaskedText?: string) {

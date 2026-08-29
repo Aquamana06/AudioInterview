@@ -22,10 +22,9 @@ type WebGPUNavigator = Navigator & {
 }
 
 function modelId(): string {
-  // Keep the first deployment light enough for mobile browsers and for
-  // initialization through the Worker model proxy. Upgrade to small later if
-  // the target devices have enough memory.
-  return 'onnx-community/whisper-tiny'
+  // Use the larger model for better Japanese and technical-vocabulary
+  // recognition. This increases initial download and browser GPU/memory load.
+  return 'onnx-community/whisper-small'
 }
 
 async function getTranscriber(onProgress?: (message: string) => void): Promise<WhisperPipeline> {
@@ -103,6 +102,7 @@ export async function transcribeInBrowser(
   blob: Blob,
   language: string,
   onProgress?: (message: string) => void,
+  includePrompt = true,
 ): Promise<{ rawText: string; chunks?: Array<{ text: string; timestamp?: [number, number] }> }> {
   const transcriber = await getTranscriber(onProgress)
   const audio = await blobToMonoFloat32(blob)
@@ -110,9 +110,30 @@ export async function transcribeInBrowser(
   const result = await transcriber(audio, {
     language,
     task: 'transcribe',
-    ...(promptIds ? { generate_kwargs: { prompt_ids: promptIds } } : {}),
+    ...(includePrompt && promptIds ? { generate_kwargs: { prompt_ids: promptIds } } : {}),
   })
   return { rawText: result.text?.trim() ?? '', chunks: result.chunks }
+}
+
+function pcmToWav(samples: Float32Array, sampleRate: number): Blob {
+  const buffer = new ArrayBuffer(44 + samples.length * 2)
+  const view = new DataView(buffer)
+  const write = (offset: number, value: string) => { for (let i = 0; i < value.length; i += 1) view.setUint8(offset + i, value.charCodeAt(i)) }
+  write(0, 'RIFF'); view.setUint32(4, 36 + samples.length * 2, true); write(8, 'WAVE')
+  write(12, 'fmt '); view.setUint32(16, 16, true); view.setUint16(20, 1, true); view.setUint16(22, 1, true)
+  view.setUint32(24, sampleRate, true); view.setUint32(28, sampleRate * 2, true); view.setUint16(32, 2, true); view.setUint16(34, 16, true)
+  write(36, 'data'); view.setUint32(40, samples.length * 2, true)
+  for (let i = 0; i < samples.length; i += 1) {
+    const sample = Math.max(-1, Math.min(1, samples[i]))
+    view.setInt16(44 + i * 2, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true)
+  }
+  return new Blob([buffer], { type: 'audio/wav' })
+}
+
+export async function detectOverInBrowser(samples: Float32Array, sampleRate: number, language: string): Promise<boolean> {
+  const result = await transcribeInBrowser(pcmToWav(samples, sampleRate), language, undefined, false)
+  const text = result.rawText.toLowerCase().replace(/[.,!?。、！？]/g, '').replace(/\s+/g, '')
+  return /(?:\bover\b|オーバー|オーバ|おーばー|おおばー)/i.test(text)
 }
 
 export async function preloadBrowserWhisper(onProgress?: (message: string) => void): Promise<void> {

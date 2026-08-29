@@ -1,2 +1,8 @@
 .DS_Store
 data
+
+# Large Whisper model weights are kept locally and are not committed.
+models/whisper-small/flax_model.msgpack
+models/whisper-small/model.safetensors
+models/whisper-small/pytorch_model.bin
+models/whisper-small/tf_model.h5

@@ -140,10 +140,33 @@ async function handleApi(request: Request, env: RuntimeEnv, ctx: Pick<ExecutionC
   if ((request.method === 'GET' || request.method === 'HEAD') && path.startsWith('/api/models/')) {
     const modelPath = path.slice('/api/models/'.length);
     if (!modelPath || modelPath.includes('..')) return error('Invalid model path', 400);
-    const upstream = await fetch(`https://huggingface.co/${modelPath}`, {
+    const modelHeaders = {
+      accept: '*/*',
+      'user-agent': 'AudioInterview-model-proxy/1.0',
+    };
+    const resolveMatch = modelPath.match(/^([^/]+\/[^/]+)\/resolve\/([^/]+)\/(.+)$/);
+    const metadataRequest = resolveMatch && !resolveMatch[3].startsWith('onnx/');
+    const upstreamUrl = metadataRequest
+      ? `https://huggingface.co/${resolveMatch[1]}/raw/${resolveMatch[2]}/${resolveMatch[3]}`
+      : `https://huggingface.co/${modelPath}`;
+    let upstream = await fetch(upstreamUrl, {
       method: request.method,
       redirect: 'follow',
+      headers: modelHeaders,
     });
+    // Hugging Face's resolve endpoint can intermittently fail for large
+    // repository metadata files. Retry the same repository/file through its
+    // raw endpoint; do not substitute another model repository.
+    if (!upstream.ok) {
+      if (resolveMatch) {
+        const [, repository, revision, filePath] = resolveMatch;
+        upstream = await fetch(`https://huggingface.co/${repository}/raw/${revision}/${filePath}`, {
+          method: request.method,
+          redirect: 'follow',
+          headers: modelHeaders,
+        });
+      }
+    }
     if (!upstream.ok) {
       return error(`Model file fetch failed (${upstream.status})`, upstream.status >= 400 && upstream.status < 600 ? upstream.status : 502);
     }

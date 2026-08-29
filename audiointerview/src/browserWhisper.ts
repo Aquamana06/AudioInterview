@@ -133,7 +133,9 @@ function pcmToWav(samples: Float32Array, sampleRate: number): Blob {
 export async function detectOverInBrowser(samples: Float32Array, sampleRate: number, language: string): Promise<boolean> {
   const result = await transcribeInBrowser(pcmToWav(samples, sampleRate), language, undefined, false)
   const text = result.rawText.toLowerCase().replace(/[.,!?。、！？]/g, '').replace(/\s+/g, '')
-  return /(?:\bover\b|オーバー|オーバ|おーばー|おおばー)/i.test(text)
+  const found = /(?:\bover\b|オーバー|オーバ|おーばー|おおばー)/i.test(text)
+  console.info('[AudioInterview][Whisper] local over detector result', { text: result.rawText, found })
+  return found
 }
 
 export async function preloadBrowserWhisper(onProgress?: (message: string) => void): Promise<void> {

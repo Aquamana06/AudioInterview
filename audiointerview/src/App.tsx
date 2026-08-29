@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import QRCode from 'qrcode'
 import './App.css'
 import alpacaBackground from './assets/interview-alpaca-background.png'
+import { preloadBrowserWhisper, transcribeInBrowser } from './browserWhisper'
+import { prepareLocalTranscript } from './terminology'
 
 type Language = 'ja' | 'en' | 'de'
 type Role = 'admin' | 'operator'
@@ -31,10 +33,12 @@ const labels: Record<SpeechState, string> = {
 }
 const languageLabels: Record<Language, string> = { ja: '日本語', en: 'English', de: 'Deutsch' }
 const locale: Record<Language, string> = { ja: 'ja-JP', en: 'en-US', de: 'de-DE' }
-const localBackendUrl = import.meta.env.VITE_LOCAL_INTERVIEW_BACKEND_URL ?? 'http://127.0.0.1:8000'
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(path, init)
+  const controller = new AbortController()
+  const timeout = window.setTimeout(() => controller.abort(), 90_000)
+  const response = await fetch(path, { ...init, signal: init?.signal ?? controller.signal })
+  window.clearTimeout(timeout)
   const data = await response.json().catch(() => ({})) as T & { error?: string }
   if (!response.ok) throw new Error(data.error || `Request failed (${response.status})`)
   return data
@@ -167,6 +171,7 @@ function Interview({ sessionId, onSessionsChanged, onExit }: { sessionId: string
   const [handsFree, setHandsFree] = useState(false)
   const [isRecording, setIsRecording] = useState(false)
   const [isBusy, setIsBusy] = useState(false)
+  const [whisperReady, setWhisperReady] = useState(false)
   const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null)
   const recorderRef = useRef<MediaRecorder | null>(null)
   const recordingRef = useRef(false)
@@ -182,6 +187,7 @@ function Interview({ sessionId, onSessionsChanged, onExit }: { sessionId: string
   const initialSpeechStartedRef = useRef(false)
   const suppressRecognitionRestartRef = useRef(false)
   const speechGenerationRef = useRef(0)
+  const busyRef = useRef(false)
 
   const speak = useCallback((value: string, language: Language) => {
     const generation = ++speechGenerationRef.current
@@ -213,9 +219,29 @@ function Interview({ sessionId, onSessionsChanged, onExit }: { sessionId: string
   }, [sessionId])
   useEffect(() => { void load() }, [load])
   useEffect(() => {
-    if (!payload || payload.session.status === 'ended' || handsFree || isBusy) return
+    if (!payload || payload.session.status === 'ended') return
+    let cancelled = false
+    setWhisperReady(false)
+    void preloadBrowserWhisper(setLiveTranscript)
+      .then(() => {
+        if (!cancelled) {
+          setWhisperReady(true)
+          setLiveTranscript('ブラウザWhisperの準備が完了しました')
+        }
+      })
+      .catch(caught => {
+        if (!cancelled) {
+          const message = caught instanceof Error ? caught.message : 'ブラウザWhisperを利用できません'
+          setLiveTranscript(`ブラウザWhisperを利用できません: ${message}`)
+          setError(message)
+        }
+      })
+    return () => { cancelled = true }
+  }, [payload?.session.id, payload?.session.status])
+  useEffect(() => {
+    if (!payload || payload.session.status === 'ended' || handsFreeRef.current) return
     const timer = window.setTimeout(() => {
-      if (!handsFreeRef.current) toggleHandsFree()
+      if (!handsFreeRef.current && !busyRef.current) toggleHandsFree()
     }, 0)
     return () => window.clearTimeout(timer)
   }, [payload?.session.id, payload?.session.status])
@@ -259,17 +285,19 @@ function Interview({ sessionId, onSessionsChanged, onExit }: { sessionId: string
   }
 
   async function transcribe(blob: Blob) {
-    if (!blob.size || !payload) return null
-    const sequence = ++transcriptionSequenceRef.current
-    const form = new FormData(); form.append('audio', blob, 'interview.webm'); form.append('language', payload.session.language)
-    const controller = new AbortController()
-    const timeout = window.setTimeout(() => controller.abort(), 20000)
-    let result: { rawText: string; normalizedText?: string; maskedText?: string }
-    try {
-      result = await api<{ rawText: string }>(`${localBackendUrl}/transcribe`, { method: 'POST', body: form, signal: controller.signal })
-    } finally {
-      window.clearTimeout(timeout)
+    console.info('[AudioInterview][Whisper] transcription requested', {
+      size: blob.size,
+      type: blob.type,
+    })
+    if (!blob.size || !payload) {
+      console.warn('[AudioInterview][Whisper] transcription skipped: empty audio blob')
+      return null
     }
+    const sequence = ++transcriptionSequenceRef.current
+    setLiveTranscript('音声を解析しています…')
+    const browserResult = await transcribeInBrowser(blob, payload.session.language, setLiveTranscript)
+    const prepared = prepareLocalTranscript(browserResult.rawText)
+    const result: { rawText: string; normalizedText?: string; maskedText?: string } = { rawText: browserResult.rawText, ...prepared }
     if (sequence === transcriptionSequenceRef.current) {
       setLiveTranscript(result.rawText)
     }
@@ -277,7 +305,11 @@ function Interview({ sessionId, onSessionsChanged, onExit }: { sessionId: string
   }
 
   async function startRecording() {
-    if (!payload || payload.session.status === 'ended' || recordingRef.current || isBusy) return
+    if (!payload || payload.session.status === 'ended' || recordingRef.current || busyRef.current || finalizingRef.current) return
+    if (!whisperReady) {
+      setError('Whisperモデルを読み込み中です。読み込み完了後に録音してください')
+      return
+    }
     try {
       setError(''); setLiveTranscript(''); finalizingRef.current = false
       commandTranscriptRef.current = ''
@@ -298,22 +330,20 @@ function Interview({ sessionId, onSessionsChanged, onExit }: { sessionId: string
     streamRef.current?.getTracks().forEach(track => track.stop()); streamRef.current = null; setSpeechState('transcribing'); beep(520, 0.3)
     try {
       const blob = new Blob(chunksRef.current, { type: mimeType || 'audio/webm' })
+      console.info('[AudioInterview][Whisper] recording stopped', {
+        chunks: chunksRef.current.length,
+        size: blob.size,
+        type: blob.type,
+      })
       const result = await transcribe(blob)
       const answer = (result?.maskedText ?? result?.rawText ?? '').trim().replace(/(?:\s|^)(?:over|オーバー|おーばー)\s*$/i, '').trim()
       if (answer) await send(answer, 'voice', result?.rawText, true, result?.maskedText)
       else {
-        const fallback = commandTranscriptRef.current.replace(/(?:\s|^)(?:over|オーバー|おーばー)\s*$/i, '').trim()
-        if (fallback) await send(fallback, 'voice')
-        else setSpeechState('ready')
+        setError('音声を認識できませんでした。もう一度、少し長めに話してください')
+        setSpeechState('ready')
       }
     } catch (caught) {
-      const fallback = commandTranscriptRef.current.replace(/(?:\s|^)(?:over|オーバー|おーばー)\s*$/i, '').trim()
-      if (fallback) {
-        try { await send(fallback, 'voice') }
-        catch (sendError) { setError(sendError instanceof Error ? sendError.message : '送信に失敗しました'); setSpeechState('error') }
-      } else {
-        setError(caught instanceof Error ? caught.message : '音声認識に失敗しました'); setSpeechState('error')
-      }
+      setError(caught instanceof Error ? caught.message : '音声認識に失敗しました'); setSpeechState('error')
     }
     finally { recorderRef.current = null; finalizingRef.current = false }
   }
@@ -329,6 +359,10 @@ function Interview({ sessionId, onSessionsChanged, onExit }: { sessionId: string
 
   function toggleHandsFree() {
     if (handsFree) {
+      // Safari may not recognize the spoken "over" command reliably. Ensure
+      // that turning off hands-free also finalizes an active recording so the
+      // Whisper pipeline is actually invoked.
+      if (recordingRef.current) stopRecording()
       const recognition = recognitionRef.current; recognitionRef.current = null; recognition?.stop()
       handsFreeRef.current = false; setHandsFree(false); if (!recordingRef.current) setSpeechState('ready'); return
     }
@@ -355,8 +389,8 @@ function Interview({ sessionId, onSessionsChanged, onExit }: { sessionId: string
   }
 
   async function send(content: string, inputMode: 'text' | 'voice', displayText?: string, manageBusy = true, preparedMaskedText?: string) {
-    if (!payload || !content.trim()) return
-    if (manageBusy) setIsBusy(true)
+    if (!payload || !content.trim() || (manageBusy && busyRef.current)) return
+    if (manageBusy) { busyRef.current = true; setIsBusy(true) }
     setSpeechState('thinking'); setError('')
     try {
       const beforeIds = new Set(payload.messages.map(message => message.id))
@@ -376,16 +410,12 @@ function Interview({ sessionId, onSessionsChanged, onExit }: { sessionId: string
         setStreamingMessageId(assistant.id)
       } else setSpeechState(result.session.status === 'ended' ? 'ended' : 'ready')
     } catch (caught) { setError(caught instanceof Error ? caught.message : '送信できませんでした'); setSpeechState('error') }
-    finally { if (manageBusy) setIsBusy(false) }
+    finally { if (manageBusy) { busyRef.current = false; setIsBusy(false) } }
   }
 
   async function sendText() {
-    if (!text.trim() || isBusy) return
-    setIsBusy(true); setSpeechState('thinking'); setError('')
-    try {
-      await send(text, 'text', undefined, false)
-    } catch (caught) { setError(caught instanceof Error ? caught.message : '送信できませんでした'); setSpeechState('error') }
-    finally { setIsBusy(false) }
+    if (!text.trim() || busyRef.current) return
+    await send(text, 'text')
   }
 
   async function endInterview() {
@@ -415,7 +445,10 @@ function Interview({ sessionId, onSessionsChanged, onExit }: { sessionId: string
         const nativeEvent = event.nativeEvent as KeyboardEvent
         if (event.key === 'Enter' && !event.shiftKey && !nativeEvent.isComposing && nativeEvent.keyCode !== 229) { event.preventDefault(); void sendText() }
       }} placeholder={payload.session.status === 'ended' ? 'このインタビューは終了しました' : '回答を入力（変換中はEnterで確定／確定後Enterで送信）'} disabled={payload.session.status === 'ended' || isBusy} />
-      <div className="composer-actions minimal-actions"><button className={`handsfree-button ${handsFree ? 'active' : ''}`} onClick={toggleHandsFree} disabled={payload.session.status === 'ended' || isBusy}>{handsFree ? '自動録音中（停止）' : '自動録音を開始'}</button><button className="primary send" onClick={() => void sendText()} disabled={!text.trim() || payload.session.status === 'ended' || isBusy}>{isBusy ? '送信中…' : '送信'}</button></div>
+      <div className="composer-actions minimal-actions">
+        <button className={`handsfree-button ${handsFree ? 'active' : ''}`} onClick={toggleHandsFree} disabled={payload.session.status === 'ended' || isBusy}>{handsFree ? '自動録音中（停止）' : '自動録音を開始'}</button>
+        <button className="primary send" onClick={() => void sendText()} disabled={!text.trim() || payload.session.status === 'ended' || isBusy}>{isBusy ? '送信中…' : '送信'}</button>
+      </div>
     </footer>
   </section>
 }

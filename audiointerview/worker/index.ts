@@ -137,6 +137,22 @@ async function handleApi(request: Request, env: RuntimeEnv, ctx: Pick<ExecutionC
   const url = new URL(request.url);
   const path = url.pathname;
 
+  if ((request.method === 'GET' || request.method === 'HEAD') && path.startsWith('/api/models/')) {
+    const modelPath = path.slice('/api/models/'.length);
+    if (!modelPath || modelPath.includes('..')) return error('Invalid model path', 400);
+    const upstream = await fetch(`https://huggingface.co/${modelPath}`, {
+      method: request.method,
+      redirect: 'follow',
+    });
+    if (!upstream.ok) {
+      return error(`Model file fetch failed (${upstream.status})`, upstream.status >= 400 && upstream.status < 600 ? upstream.status : 502);
+    }
+    const headers = new Headers(upstream.headers);
+    headers.set('access-control-allow-origin', url.origin);
+    headers.set('cache-control', headers.get('cache-control') ?? 'public, max-age=31536000, immutable');
+    return new Response(upstream.body, { status: upstream.status, statusText: upstream.statusText, headers });
+  }
+
   if (request.method === 'GET' && path === '/api/status') return json(await openaiStatus(env));
 
   if (request.method === 'POST' && path === '/api/local/mask-text') {

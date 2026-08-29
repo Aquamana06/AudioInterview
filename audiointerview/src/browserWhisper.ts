@@ -9,6 +9,17 @@ type WhisperPipeline = {
   (audio: Float32Array, options: Record<string, unknown>): Promise<{ text?: string; chunks?: Array<{ text: string }> }>
 }
 
+export type WhisperSettings = {
+  prompt?: string
+  chunkLengthSeconds?: number
+  strideLengthSeconds?: number
+  timestamps?: boolean
+  trimSilence?: boolean
+  normalize?: boolean
+}
+
+export type WhisperChunk = { text: string; timestamp?: [number, number] }
+
 const PROMPT = '化学プラントの現場インタビュー。専門用語: 重合、鹸化、加水分解、触媒、モノマー、ポリマー。読み方: じゅうごう、けんか。'
 
 let transcriberPromise: Promise<WhisperPipeline> | null = null
@@ -42,7 +53,11 @@ async function getTranscriber(onProgress?: (message: string) => void): Promise<W
     onProgress?.('Whisperモデルを読み込んでいます（WebGPU、初回のみ時間がかかります）…')
     // Fetch model files through the Worker so deployed sites do not depend on
     // Hugging Face returning CORS headers for every redirected asset.
-    env.remoteHost = `${window.location.origin}/api/models`
+    // The lab can run as a plain Vite app without the Cloudflare Worker. In
+    // that mode, fetch model assets directly from Hugging Face; the deployed
+    // full app keeps using its same-origin proxy.
+    const isStandaloneLab = window.location.pathname === '/whisper-lab'
+    env.remoteHost = isStandaloneLab ? 'https://huggingface.co' : `${window.location.origin}/api/models`
     // The library appends the requested filename after this template.
     // Keep the Hub's resolve endpoint so large ONNX files are served as the
     // original binary rather than as a raw repository response.
@@ -50,7 +65,9 @@ async function getTranscriber(onProgress?: (message: string) => void): Promise<W
     console.info('[AudioInterview][Whisper] loading model', modelId())
     transcriberPromise = pipeline('automatic-speech-recognition', modelId(), {
       device: 'webgpu',
-      dtype: 'q4',
+      // Whisper's encoder is sensitive to 4-bit quantization. fp16 keeps the
+      // model on WebGPU while avoiding the largest accuracy loss of q4.
+      dtype: 'fp16',
       progress_callback: (event: { status?: string; file?: string; progress?: number }) => {
         console.info('[AudioInterview][Whisper] progress', event)
         if (event.status === 'progress' && typeof event.progress === 'number') {
@@ -69,7 +86,7 @@ function audioContext(): AudioContext {
   return new AudioContext()
 }
 
-async function blobToMonoFloat32(blob: Blob): Promise<Float32Array> {
+async function blobToMonoFloat32(blob: Blob, settings: WhisperSettings = {}): Promise<Float32Array> {
   const context = audioContext()
   try {
     const decoded = await context.decodeAudioData(await blob.arrayBuffer())
@@ -81,16 +98,38 @@ async function blobToMonoFloat32(blob: Blob): Promise<Float32Array> {
     // Whisper's feature extractor expects 16 kHz PCM. MediaRecorder usually
     // produces 44.1/48 kHz audio, so resample before passing it to the model.
     const targetRate = 16000
-    if (decoded.sampleRate === targetRate) return mono
-    const targetLength = Math.max(1, Math.round(mono.length * targetRate / decoded.sampleRate))
+    let prepared = mono
+    if (settings.trimSilence) {
+      // Remove only long, very quiet margins. Keeping the threshold conservative
+      // avoids cutting quiet Japanese syllables at the beginning/end.
+      const threshold = 0.008
+      let first = 0
+      while (first < prepared.length && Math.abs(prepared[first]) < threshold) first += 1
+      let last = prepared.length - 1
+      while (last > first && Math.abs(prepared[last]) < threshold) last -= 1
+      const padding = Math.round(targetRate * 0.12)
+      const start = Math.max(0, first - padding)
+      const end = Math.min(prepared.length, last + padding + 1)
+      if (end - start > targetRate * 0.25) prepared = prepared.slice(start, end)
+    }
+    if (settings.normalize) {
+      let peak = 0
+      for (const sample of prepared) peak = Math.max(peak, Math.abs(sample))
+      if (peak > 0.02 && peak < 0.9) {
+        const gain = Math.min(0.9 / peak, 4)
+        prepared = prepared.map(sample => sample * gain)
+      }
+    }
+    if (decoded.sampleRate === targetRate) return prepared
+    const targetLength = Math.max(1, Math.round(prepared.length * targetRate / decoded.sampleRate))
     const resampled = new Float32Array(targetLength)
     const ratio = decoded.sampleRate / targetRate
     for (let i = 0; i < targetLength; i += 1) {
       const sourcePosition = i * ratio
       const left = Math.floor(sourcePosition)
-      const right = Math.min(left + 1, mono.length - 1)
+      const right = Math.min(left + 1, prepared.length - 1)
       const fraction = sourcePosition - left
-      resampled[i] = mono[left] * (1 - fraction) + mono[right] * fraction
+      resampled[i] = prepared[left] * (1 - fraction) + prepared[right] * fraction
     }
     return resampled
   } finally {
@@ -103,13 +142,20 @@ export async function transcribeInBrowser(
   language: string,
   onProgress?: (message: string) => void,
   includePrompt = true,
-): Promise<{ rawText: string; chunks?: Array<{ text: string; timestamp?: [number, number] }> }> {
+  settings: WhisperSettings = {},
+): Promise<{ rawText: string; chunks?: WhisperChunk[] }> {
   const transcriber = await getTranscriber(onProgress)
-  const audio = await blobToMonoFloat32(blob)
-  const promptIds = transcriber.tokenizer.get_prompt_ids?.(PROMPT, { return_tensors: 'np' })
+  const audio = await blobToMonoFloat32(blob, settings)
+  const promptText = settings.prompt?.trim() || PROMPT
+  const promptIds = transcriber.tokenizer.get_prompt_ids?.(promptText, { return_tensors: 'np' })
   const result = await transcriber(audio, {
     language,
     task: 'transcribe',
+    ...(settings.chunkLengthSeconds ? {
+      chunk_length_s: settings.chunkLengthSeconds,
+      stride_length_s: settings.strideLengthSeconds ?? Math.min(5, settings.chunkLengthSeconds / 6),
+    } : {}),
+    ...(settings.timestamps ? { return_timestamps: true } : {}),
     ...(includePrompt && promptIds ? { generate_kwargs: { prompt_ids: promptIds } } : {}),
   })
   return { rawText: result.text?.trim() ?? '', chunks: result.chunks }

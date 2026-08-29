@@ -1,0 +1,5 @@
+# Local MP4 transcription environment
+torch>=2.2
+transformers>=4.46
+huggingface_hub>=0.26
+numpy>=1.26

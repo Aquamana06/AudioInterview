@@ -48,6 +48,27 @@ c
 http://127.0.0.1:5173
 ```
 
+## Whisper精度検証ラボ（ローカルMP4）
+
+ブラウザを使わず、`data/` に置いたMP4/M4Aなどをローカルの `openai/whisper-small` で文字起こしできます。
+初回実行時だけモデルをHugging Faceから `models/whisper-small/` にダウンロードします。
+
+```bash
+sudo apt install ffmpeg
+python -m venv .venv-local-whisper
+.venv-local-whisper/bin/pip install -r requirements-local-whisper.txt
+.venv-local-whisper/bin/python scripts/transcribe_local.py data/interview.mp4
+```
+
+`data/` 内のMP4を全部処理する場合:
+
+```bash
+.venv-local-whisper/bin/python scripts/transcribe_local.py --all --save
+```
+
+GPUが利用できる場合はCUDAを自動使用し、なければCPUで実行します。認識結果は標準出力に出し、
+`--save` を付けるとMP4と同じ場所にTXTで保存します。専門用語プロンプトなしで比較する場合は `--no-prompt` を付けます。
+
 初期 admin アカウントは次の通りです。
 
 ```text

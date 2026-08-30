@@ -1,4 +1,5 @@
 import type { ExtractedInfo, RuntimeEnv } from './types.js';
+import { transcriptionPrompt } from './terminology.js';
 
 type ResponseMessage = {
   output?: Array<{ content?: Array<{ type: string; text?: string }> }>;
@@ -125,6 +126,7 @@ export async function transcribeAudio(env: RuntimeEnv, file: File, language?: st
   const form = new FormData();
   form.append('file', file);
   form.append('model', env.OPENAI_TRANSCRIBE_MODEL ?? 'whisper-1');
+  form.append('prompt', transcriptionPrompt);
   if (language) form.append('language', language);
 
   const response = await fetch('https://api.openai.com/v1/audio/transcriptions', {

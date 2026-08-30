@@ -28,7 +28,8 @@ export function readCookie(request: Request, name: string) {
 
 export async function requireAuth(request: Request, env: RuntimeEnv): Promise<AuthContext> {
   await ensureAdmin(env);
-  const token = readCookie(request, cookieName);
+  const bearer = request.headers.get('authorization')?.match(/^Bearer\s+(.+)$/i)?.[1]?.trim();
+  const token = bearer || readCookie(request, cookieName);
   if (!token) throw new HttpError('Authentication required', 401);
 
   const account = await getSessionAccount(env, token);

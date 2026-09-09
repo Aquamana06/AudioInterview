@@ -1,0 +1,75 @@
+AudioInterview インタビューモデル関連ファイル
+==============================================
+
+全体の呼び出し関係
+------------------
+
+index.ts
+  ├─ 初回セッション: profile-interview-agent.ts
+  │                    └─ profile-interview-openai.ts
+  └─ 2回目以降:       longitudinal-agent.ts
+                       └─ agent.ts
+                            └─ openai.ts
+
+
+ファイルごとの役割
+------------------
+
+■ index.ts
+APIの入口。ユーザーの回答を受け取り、初回か継続かを判定して、
+適切なインタビューロジックを呼び出す。
+
+インタビューの質問生成そのものではないが、各ロジックの呼び出し関係を確認するために必要。
+
+
+■ profile-interview-agent.ts
+初回インタビューのロジック。
+参加者の役割、経験、担当業務などを聞く質問を生成する。
+
+
+■ profile-interview-openai.ts
+初回インタビューの回答から、役割・経験・責任範囲などを抽出する。
+
+
+■ longitudinal-agent.ts
+2回目以降の継続インタビューの制御。
+過去セッションの情報を会話履歴に加えたうえで、agent.tsを呼び出す。
+
+
+■ agent.ts
+インタビュー処理の中心。
+
+- 回答から業務、状況、実践、理由、価値観などを抽出
+- インタビュー状態を更新
+- 次に聞く内容を決定
+- 次のインタビュアー発話を生成
+- インタビュー終了を判定
+
+
+■ openai.ts
+OpenAI APIを呼び出す共通処理。
+agent.tsなどから渡されたプロンプトをOpenAIに送り、生成結果を返す。
+
+
+お渡しするファイル
+------------------
+
+インタビューモデルのロジックとして、以下のファイルをお渡しします。
+
+- agent.ts
+- profile-interview-agent.ts
+- profile-interview-openai.ts
+- longitudinal-agent.ts
+- longitudinal-memory.ts
+- longitudinal-openai.ts
+- openai.ts
+
+index.tsは質問生成ロジックそのものではありませんが、
+初回・継続インタビューの分岐と各ファイルの呼び出し関係を確認するため、あわせてお渡しします。
+
+index.ts、db.ts、types.ts、longitudinal-types.tsは、
+アプリケーションとの接続、データ保存、型定義に関係する補助ファイルです。
+
+特に、longitudinal-memory.tsとlongitudinal-openai.tsは、
+過去セッションの情報を次回のインタビューへ引き継ぐ仕組みに関係するため、
+継続型インタビューの全体を確認する際に必要です。

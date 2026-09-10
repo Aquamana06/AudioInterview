@@ -317,6 +317,19 @@ async function handleApi(request: Request, env: RuntimeEnv, ctx: Pick<ExecutionC
     }
   }
 
+  const accountMatch = path.match(/^\/api\/admin\/accounts\/([^/]+)$/);
+  if (accountMatch && request.method === 'DELETE') {
+    await requireAdmin(request, env);
+    const id = decodeURIComponent(accountMatch[1]);
+    const result = await env.RI_db.prepare(
+      "UPDATE accounts SET is_active = 0, updated_at = ? WHERE id = ? AND role = 'operator' AND is_active = 1",
+    )
+      .bind(nowIso(), id)
+      .run();
+    if (!result.meta.changes) throw new HttpError('Account not found', 404);
+    return json({ ok: true });
+  }
+
   if (request.method === 'GET' && path === '/api/admin/histories') {
     await requireAdmin(request, env);
     const { results } = await env.RI_db.prepare(

@@ -518,5 +518,5 @@ function fallbackQuestion(state: InterviewState) {
   if (!state.target_work) return '先ほどの業務について、その時の状況も含めてもう少し聞かせてください。';
   if (state.task_coverage < 0.7) return `${state.target_work} の場面では、普段どんな流れで進めていましたか？`;
   if (state.task_depth < 5) return `その ${state.target_work} で大事にしている判断や考え方はありますか？`;
-  return `${state.target_work} で想定外のことが起きた時は、どのように受け止めていますか？`;
+  return `${state.target_work} で想定外のことが起きた時は、どのように受け止めていますか,？`;
 }

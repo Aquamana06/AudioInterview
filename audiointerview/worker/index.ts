@@ -305,10 +305,15 @@ async function handleApi(request: Request, env: RuntimeEnv, ctx: Pick<ExecutionC
       const body = await jsonBody<{ id?: string; displayName?: string }>(request);
       const id = body.id?.trim() || randomId('operator').slice(0, 17);
       if (!/^[A-Za-z0-9_-]{3,40}$/.test(id)) throw new HttpError('ID must be 3-40 letters, numbers, _ or -');
+      const displayName = body.displayName?.trim() || id;
       await env.RI_db.prepare("INSERT INTO accounts (id, role, display_name) VALUES (?, 'operator', ?)")
-        .bind(id, body.displayName?.trim() || id)
+        .bind(id, displayName)
         .run();
-      return json({ id, qrToken: `audiointerview://login?id=${encodeURIComponent(id)}` }, { status: 201 });
+      return json({
+        account: { id, role: 'operator', displayName },
+        id,
+        qrToken: `audiointerview://login?id=${encodeURIComponent(id)}`,
+      }, { status: 201 });
     }
   }
 

@@ -28,6 +28,7 @@ export function initialState(): InterviewState {
     target_work: null,
     task_coverage: 0,
     task_depth: 0,
+    high_depth_turn_count: 0,
     irregular_coverage: 0,
     rapport: 0,
     known_facts: [],
@@ -48,8 +49,8 @@ export async function runInterviewTurn(
   chatHistory: MessageRow[],
   language: Language,
 ): Promise<AgentResult> {
-  const extracted = await extractInfo(env, userInput, state, chatHistory);
-  const nextState = updateStateFromExtraction(structuredClone(state), extracted);
+  const extracted = await extractInfoForEvaluation(env, userInput, state, chatHistory);
+  const nextState = updateStateFromExtractionForEvaluation(structuredClone(state), extracted);
   const guide = buildConversationGuide(nextState, extracted);
 
   if (extracted.wants_to_stop || guide.should_end) {
@@ -75,7 +76,7 @@ export async function runInterviewTurn(
   };
 }
 
-async function extractInfo(env: RuntimeEnv, userInput: string, state: InterviewState, chatHistory: MessageRow[]) {
+export async function extractInfoForEvaluation(env: RuntimeEnv, userInput: string, state: InterviewState, chatHistory: MessageRow[]) {
   const prompt = `あなたは半構造化インタビューの情報抽出器です。
 直前のインタビュイ発話から、対象業務に関する情報を構造化してください。
 
@@ -161,7 +162,7 @@ ${userInput}`;
   }
 }
 
-function updateStateFromExtraction(state: InterviewState, info: ExtractedInfo) {
+export function updateStateFromExtractionForEvaluation(state: InterviewState, info: ExtractedInfo) {
   state.turn_count += 1;
 
   if (info.target_work) {
@@ -189,6 +190,7 @@ function updateStateFromExtraction(state: InterviewState, info: ExtractedInfo) {
   // Depth is earned only when the evidence forms a contiguous chain. A single
   // abstract value or personal anecdote must not skip the missing layers.
   state.task_depth = Math.max(state.task_depth, calculateSupportedDepth(state));
+  if (state.task_depth >= 5) state.high_depth_turn_count = (state.high_depth_turn_count ?? 0) + 1;
 
   for (const item of info.irregular_situations) state.known_facts.push(`イレギュラー状況: ${item}`);
   if (info.irregular_situations.length) state.irregular_coverage = Math.min(1, state.irregular_coverage + 0.25);
@@ -435,7 +437,7 @@ function updateAfterUtterance(state: InterviewState, utterance: string) {
 }
 
 function shouldEndInterview(state: InterviewState) {
-  return state.task_coverage >= 1 && state.task_depth >= 6 && state.irregular_coverage >= 1;
+  return state.high_depth_turn_count >= 2 || (state.task_coverage >= 1 && state.task_depth >= 6 && state.irregular_coverage >= 1);
 }
 
 function buildUseAsKnown(state: InterviewState) {

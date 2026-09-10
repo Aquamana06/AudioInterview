@@ -32,6 +32,19 @@ npm run interview -- --model longitudinal --participant user-001 --llm-model gpt
 
 記憶は `.terminal-interview-memory.local` に保存され、`/memory` で現在の内容を確認できます。
 
+## depth判定の人間評価
+
+半構造化インタビュー用の実験エージェントを動かしながら、各回答に対するdepthと人間の自己評価をファイルへ保存できます。質問の方向性は固定せず、直前の発話と履歴から柔軟に次の発話を生成します。depth抽出は本番と同じ階層基準を使い、depth 5以上が2回観測されると終了します。DBは使用せず、既定では `sample_data/depth-evaluations/` に1セッション1 JSONで保存します（`sample_data/` はgit管理外です）。
+
+```bash
+npm run depth-evaluation
+npm run depth-evaluation -- --model longitudinal
+```
+
+`--model` は過去の実験記録との互換用に残しており、評価CLIの質問生成はどちらを指定しても実験用の半構造化エージェントを使います。本番のlongitudinal agent側でもdepth階層は連続判定に統一しています。
+
+各回答の後に `human depth (0-6, /skip, /quit):` と表示されます。`4 理由までは具体的` のように数値と任意メモを入力してください。履歴・agent state・抽出結果・会話方針・agent depth・人間評価は、ターンごとに即時保存されます。
+
 ## React + TypeScript + Vite
 
 This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.

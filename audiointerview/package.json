@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "interview": "node terminal-interview.mjs",
+    "depth-evaluation": "node experiments/depth-evaluation/depth-evaluation.mjs",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
     "preview": "npm run build && vite preview",

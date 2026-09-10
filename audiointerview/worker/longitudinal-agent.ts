@@ -107,12 +107,12 @@ function calculateFlexibleDepth(state: InterviewState) {
   if (!state.target_work) return 0;
 
   const has = (prefix: string) => state.known_facts.some((fact) => fact.startsWith(prefix));
-  if (has('個人的意味・価値観の形成背景・真髄:')) return 6;
-  if (has('価値観:')) return 5;
-  if (has('源泉:')) return 4;
-  if (has('理由:')) return 3;
-  if (has('業務上の実践:')) return 2;
-  return 1;
+  if (!has('業務上の実践:')) return 1;
+  if (!has('理由:')) return 2;
+  if (!has('源泉:')) return 3;
+  if (!has('価値観:')) return 4;
+  if (!has('個人的意味・価値観の形成背景・真髄:')) return 5;
+  return 6;
 }
 
 function depthPivotMessage(language: Language, hasMemory: boolean): MessageRow {

@@ -11,7 +11,9 @@
   },
   "include": [
     "scripts/terminal-interview.ts",
+    "experiments/depth-evaluation/depth-evaluation.ts",
     "worker/agent.ts",
+    "experiments/depth-evaluation/depth-evaluation-agent.ts",
     "worker/db.ts",
     "worker/openai.ts",
     "worker/types.ts",

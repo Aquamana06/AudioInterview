@@ -194,6 +194,7 @@ function printInternals(result: Awaited<ReturnType<typeof runContextualInterview
       `turn=${result.state.turn_count}`,
       `網羅性=${formatNumber(result.state.task_coverage)}`,
       `深さ=${formatNumber(result.state.task_depth)}`,
+      `depth5+回数=${result.state.high_depth_turn_count ?? 0}`,
       `イレギュラー網羅=${formatNumber(result.state.irregular_coverage)}`,
       `rapport=${formatNumber(result.state.rapport)}`,
     ].join(' / '),

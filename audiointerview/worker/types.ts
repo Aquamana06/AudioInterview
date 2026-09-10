@@ -81,6 +81,7 @@ export interface InterviewState {
   target_work: string | null;
   task_coverage: number;
   task_depth: number;
+  high_depth_turn_count: number;
   irregular_coverage: number;
   rapport: number;
   known_facts: string[];

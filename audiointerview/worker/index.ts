@@ -201,7 +201,7 @@ async function handleApi(request: Request, env: RuntimeEnv, ctx: Pick<ExecutionC
     const id = (body.id || body.qrToken || '').replace(/^audiointerview:\/\/login\?id=/, '');
     if (!id) throw new HttpError('ID is required');
     const result = await login(env, decodeURIComponent(id), body.password);
-    return cookieResponse({ account: result.account }, authCookie(request, result.token));
+    return cookieResponse({ account: result.account, token: result.token }, authCookie(request, result.token));
   }
 
   if (request.method === 'POST' && path === '/api/auth/logout') {

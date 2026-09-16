@@ -60,6 +60,14 @@ export interface ApiMessage {
 
 export interface ExtractedInfo {
   target_work: string | null;
+  deep_dive_opportunity: boolean;
+  deep_dive_anchor: string | null;
+  fram_input: string[];
+  fram_precondition: string[];
+  fram_resource: string[];
+  fram_control: string[];
+  fram_time: string[];
+  fram_output: string[];
   situations: string[];
   practices: string[];
   reasons: string[];
@@ -80,6 +88,15 @@ export interface ExtractedInfo {
 export interface InterviewState {
   target_work: string | null;
   task_coverage: number;
+  task_coverage_by_fram: {
+    input: number;
+    precondition: number;
+    resource: number;
+    control: number;
+    time: number;
+    output: number;
+  };
+  practice_covered: boolean;
   task_depth: number;
   high_depth_turn_count: number;
   irregular_coverage: number;
@@ -101,6 +118,7 @@ export interface ConversationGuide {
   should_answer_user_question?: boolean;
   guidance: string;
   priorities: string[];
+  deep_dive_anchor?: string;
   dice_hint?: 'C' | 'D' | 'E' | 'I';
   avoid_reasking: string[];
   use_as_known: string[];

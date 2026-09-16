@@ -27,6 +27,15 @@ export function initialState(): InterviewState {
   return {
     target_work: null,
     task_coverage: 0,
+    task_coverage_by_fram: {
+      input: 0,
+      precondition: 0,
+      resource: 0,
+      control: 0,
+      time: 0,
+      output: 0,
+    },
+    practice_covered: false,
     task_depth: 0,
     high_depth_turn_count: 0,
     irregular_coverage: 0,
@@ -89,6 +98,8 @@ export async function extractInfoForEvaluation(env: RuntimeEnv, userInput: strin
 - values は、単なる好みや感想ではなく、業務で優先する判断基準・信念が明示された場合だけ抽出する。
 - personal_meanings は、個人的な経験と現在の仕事観のつながり、または本人にとっての仕事の意味が明示された場合だけ抽出する。
 - 同じ一文を複数の深さ項目へ安易に重複分類しない。判断に迷う場合は抽出しない。
+- FRAMの6要素も同じ事実を複数要素へ重複分類しない。抽象的に推測せず、明示された事実だけ抽出する。
+- deep_dive_opportunity は、網羅性を埋めるための都合のよい合図として乱用しない。質問にするとしたら、直前発話の具体的な一部分に直接つながる一問が作れる場合だけ true。
 - 既に分かっていることは、必要に応じて維持してよいが、最新回答にないことを無理に追加しない。
 - reason/source は独立した質問項目ではなく、対象業務の深さを高める材料。
 - friction は、相手が「さっき言った」「同じこと聞かないで」「今はその話」など、重複・脱線・誤解を指摘している場合。
@@ -97,6 +108,9 @@ export async function extractInfoForEvaluation(env: RuntimeEnv, userInput: strin
 抽出項目:
 - target_work:
   一番最初に話していた主題業務。
+
+- fram_input / fram_precondition / fram_resource / fram_control / fram_time / fram_output:
+  FRAMの6要素。順に、作業のきっかけ・処理対象、実行前の条件、必要・消費する資源、監督・調整する計画や手順、利用可能な時間や制約、作業の結果。直前発話に明示された事実だけを対応する配列へ抽出する。
 
 - situations:
   混雑、休憩直後、忙しい時間帯、特定の客対応などの状況。
@@ -115,6 +129,12 @@ export async function extractInfoForEvaluation(env: RuntimeEnv, userInput: strin
 
 - personal_meanings:
   個人的経験・価値観の形成背景・仕事の真髄。
+
+- deep_dive_opportunity:
+  直前発話そのものを一点集中で掘り下げる価値がある場合だけ true。新しい具体的な話題・意外な細部が出た、感嘆・嘆き・困惑など感情が表れた、直接回答の後に「だから」「〜だし」などで理由や補足が続いた、または初心者なら自然に気になる具体的な発言がある場合を候補にする。ただ長いだけ、一般論、既知情報の繰り返しでは false。
+
+- deep_dive_anchor:
+  deep_dive_opportunity が true の場合、その質問の根拠にする直前発話中の具体的な一部分を短く記録する。それ以外は null。発話にないことを補わない。
 
 - irregular_situations:
   想定外、例外、イレギュラーな状況。
@@ -164,20 +184,30 @@ ${userInput}`;
 
 export function updateStateFromExtractionForEvaluation(state: InterviewState, info: ExtractedInfo) {
   state.turn_count += 1;
+  const previousFramCoverage = state.task_coverage_by_fram;
+  state.task_coverage_by_fram = {
+    input: previousFramCoverage?.input ?? 0,
+    precondition: previousFramCoverage?.precondition ?? 0,
+    resource: previousFramCoverage?.resource ?? 0,
+    control: previousFramCoverage?.control ?? 0,
+    time: previousFramCoverage?.time ?? 0,
+    output: previousFramCoverage?.output ?? 0,
+  };
+  if (state.practice_covered === undefined) {
+    state.practice_covered = state.known_facts.some((fact) => fact.startsWith('業務上の実践:'));
+  }
 
   if (info.target_work) {
     state.target_work = info.target_work;
-    state.task_coverage = Math.max(state.task_coverage, 0.2);
     state.known_facts.push(`対象業務: ${info.target_work}`);
   }
 
+  if (info.practices.length) state.practice_covered = true;
+  updateFramCoverage(state, info);
+
   for (const item of info.situations) state.known_facts.push(`状況: ${item}`);
-  if (info.situations.length) state.task_coverage = Math.min(1, state.task_coverage + 0.05);
 
   for (const item of info.practices) state.known_facts.push(`業務上の実践: ${item}`);
-  if (info.practices.length) {
-    state.task_coverage = Math.min(1, state.task_coverage + 0.1);
-  }
 
   for (const item of info.reasons) state.known_facts.push(`理由: ${item}`);
 
@@ -223,6 +253,31 @@ export function updateStateFromExtractionForEvaluation(state: InterviewState, in
   if (hasInformativeContent(info)) state.rapport = Math.min(1, state.rapport + 0.03);
   trimState(state);
   return state;
+}
+
+const framFields = [
+  ['input', 'fram_input'],
+  ['precondition', 'fram_precondition'],
+  ['resource', 'fram_resource'],
+  ['control', 'fram_control'],
+  ['time', 'fram_time'],
+  ['output', 'fram_output'],
+] as const;
+
+function updateFramCoverage(state: InterviewState, info: ExtractedInfo) {
+  // A field earns 0.05 per informative turn and is capped at 0.1. This keeps
+  // one unusually broad answer from making a single FRAM dimension dominate.
+  for (const [key, field] of framFields) {
+    if (info[field].length) {
+      state.task_coverage_by_fram[key] = Math.min(0.1, state.task_coverage_by_fram[key] + 0.05);
+      for (const item of info[field]) state.known_facts.push(`FRAM ${key}: ${item}`);
+    }
+  }
+
+  const coveredCount = Object.values(state.task_coverage_by_fram).filter((value) => value > 0).length;
+  const baseCoverage = Object.values(state.task_coverage_by_fram).reduce((sum, value) => sum + value, 0);
+  const completionBonus = coveredCount >= 6 ? 0.4 : coveredCount >= 5 ? 0.2 : coveredCount >= 4 ? 0.1 : 0;
+  state.task_coverage = Math.min(1, Number((baseCoverage + completionBonus).toFixed(2)));
 }
 
 function buildConversationGuide(state: InterviewState, info: ExtractedInfo): ConversationGuide {
@@ -283,6 +338,17 @@ function buildConversationGuide(state: InterviewState, info: ExtractedInfo): Con
     });
   }
 
+  if (info.deep_dive_opportunity && info.deep_dive_anchor) {
+    return base({
+      should_ask_question: true,
+      should_end: false,
+      guidance:
+        '直前発話に、半構造化インタビューにおいて質問項目から脱線して発生した新しいトピックについて掘り下げる，ここぞの機会が含まれている。deep_dive_anchor に直接触れ、その新しい話題や具体的な発言について、理解を深める自然な一問を生成する。質問の切り口は発話の内容に応じて自律的に選ぶ。FRAMや深さの未充足を機械的に聞かず、直前発話から離れない。半構造化インタビューとは事前に決められた質問項目だけでなく柔軟に質問を変更していいのである．',
+      priorities: ['deep_dive_anchor に直接乗る', '直前発話から離れない'],
+      deep_dive_anchor: info.deep_dive_anchor,
+    });
+  }
+
   if (state.turns_since_reflection >= 3) {
     return base({
       should_ask_question: false,
@@ -298,8 +364,19 @@ function buildConversationGuide(state: InterviewState, info: ExtractedInfo): Con
       should_ask_question: true,
       should_end: false,
       guidance:
-        '対象業務の流れ・場面・仕事の進め方の理解がまだ浅い。ただし『どんな工夫』『具体的に』とは聞かず、相手の直前発話に乗って自然に業務の様子を聞く。',
-      priorities: ['対象業務の様子を理解する', '相手の直前発話に乗る', '質問攻めにしない'],
+        '対象業務のFRAM上の網羅的な理解がまだ浅い。不足している要素を内部で確認し、相手の直前発話から最も自然につながる方向を一つだけ選んで聞く。項目名を読み上げたり、質問票のように列挙したりしない。',
+      priorities: ['FRAM 6要素の不足を偏りなく補う', '相手の直前発話に乗る', '質問攻めにしない'],
+      dice_hint: 'D',
+    });
+  }
+
+  if (!state.target_work || !state.practice_covered) {
+    return base({
+      should_ask_question: true,
+      should_end: false,
+      guidance:
+        'FRAMの網羅性は一定水準に達した。対象業務と、その中で実際に行ったことのどちらか未確認のものを、相手の直前発話に乗って自然に把握する。',
+      priorities: ['対象業務と実際の実践の未確認分を補う', '相手の直前発話に乗る'],
       dice_hint: 'D',
     });
   }
@@ -359,7 +436,7 @@ async function generateUtterance(
 あくまでこれは監査ではなく，あなたは初心者であり，相手の業務や考え方をレジリエンスエンジアリングのwork-as-doneを理解するためのインタビューです。
 
 裏で知りたいこと:
-- 対象業務ににまつわること（手順やルール，意図など）
+- 対象業務ににまつわること（内容や手順やルール，意図など）
 - 理由、価値観、本音、経験、源泉
 - その人が何を見て、何を大事にしているか
 - イレギュラーな状況とその対応
@@ -371,6 +448,7 @@ async function generateUtterance(
 - 質問する場合は、一度に一つだけ尋ねる。複数の疑問文や質問項目を並べない。
 - 相手の発話の要約は、質問に必要な最小限の一節だけにする。
 - should_answer_user_question が true の場合は、相手の確認・逆質問に短く答える。
+- deep_dive_anchor が guide にある場合は、その部分を起点に理解を深める質問を一つだけ作る。半構造化インタビューにおける柔軟な質問生成のタイミングである．質問の型は固定せず、anchor の内容に応じて「それはどういうことか」「どのくらいあるのか」など最も自然な聞き方を自分で選ぶ。
 - avoid_reasking に含まれることは絶対に聞き直さない。
 - use_as_known に含まれることは既知の前提として使う。
 - 対象業務から勝手に離れない。
@@ -436,7 +514,7 @@ function updateAfterUtterance(state: InterviewState, utterance: string) {
 }
 
 function shouldEndInterview(state: InterviewState) {
-  return state.high_depth_turn_count >= 2 || (state.task_coverage >= 1 && state.task_depth >= 6 && state.irregular_coverage >= 1);
+  return Boolean(state.target_work && state.practice_covered && state.task_coverage >= 0.7 && (state.high_depth_turn_count >= 2 || (state.task_coverage >= 1 && state.task_depth >= 6 && state.irregular_coverage >= 1)));
 }
 
 function buildUseAsKnown(state: InterviewState) {
@@ -479,7 +557,15 @@ function calculateSupportedDepth(state: InterviewState) {
 
 function hasInformativeContent(info: ExtractedInfo) {
   return Boolean(
-    info.target_work ||
+      info.target_work ||
+      info.deep_dive_opportunity ||
+      info.deep_dive_anchor ||
+      info.fram_input.length ||
+      info.fram_precondition.length ||
+      info.fram_resource.length ||
+      info.fram_control.length ||
+      info.fram_time.length ||
+      info.fram_output.length ||
       info.situations.length ||
       info.practices.length ||
       info.reasons.length ||
@@ -517,6 +603,7 @@ function fallbackExtract(text: string): ExtractedInfo {
 function fallbackQuestion(state: InterviewState) {
   if (!state.target_work) return '先ほどの業務について、その時の状況も含めてもう少し聞かせてください。';
   if (state.task_coverage < 0.7) return `${state.target_work} の場面では、普段どんな流れで進めていましたか？`;
+  if (!state.practice_covered) return `その場面で、実際にはどんなことをしていましたか？`;
   if (state.task_depth < 5) return `その ${state.target_work} で大事にしている判断や考え方はありますか？`;
   return `${state.target_work} で想定外のことが起きた時は、どのように受け止めていますか,？`;
 }

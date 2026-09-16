@@ -304,11 +304,32 @@ async function handleApi(request: Request, env: RuntimeEnv, ctx: Pick<ExecutionC
     if (request.method === 'POST') {
       const body = await jsonBody<{ id?: string; displayName?: string }>(request);
       const id = body.id?.trim() || randomId('operator').slice(0, 17);
-      if (!/^[A-Za-z0-9_-]{3,40}$/.test(id)) throw new HttpError('ID must be 3-40 letters, numbers, _ or -');
       const displayName = body.displayName?.trim() || id;
-      await env.RI_db.prepare("INSERT INTO accounts (id, role, display_name) VALUES (?, 'operator', ?)")
-        .bind(id, displayName)
-        .run();
+      if (!/^[A-Za-z0-9_-]{3,40}$/.test(id)) {
+        throw new HttpError('ID must be 3-40 letters, numbers, _ or -');
+      }
+
+      const existing = await env.RI_db.prepare(
+        'SELECT id, role, is_active FROM accounts WHERE id = ?',
+      ).bind(id).first<{ id: string; role: string; is_active: number }>();
+
+      if (existing && existing.role !== 'operator') {
+        throw new HttpError('That ID already exists', 409);
+      }
+      if (existing?.is_active) {
+        throw new HttpError('That ID already exists', 409);
+      }
+
+      if (existing) {
+        await env.RI_db.prepare(
+          'UPDATE accounts SET display_name = ?, is_active = 1, updated_at = ? WHERE id = ?',
+        ).bind(displayName, nowIso(), id).run();
+      } else {
+        await env.RI_db.prepare("INSERT INTO accounts (id, role, display_name) VALUES (?, 'operator', ?)")
+          .bind(id, displayName)
+          .run();
+      }
+
       return json({
         account: { id, role: 'operator', displayName },
         id,

@@ -63,6 +63,14 @@ Cloudflare Pages / Workers / D1 を用いて、フロントエンド、API、デ
   - 次の自然な発話を生成する。
 - 抽出項目は以下とする。
   - `target_work`
+  - `deep_dive_opportunity`
+  - `deep_dive_anchor`
+  - `fram_input`
+  - `fram_precondition`
+  - `fram_resource`
+  - `fram_control`
+  - `fram_time`
+  - `fram_output`
   - `situations`
   - `practices`
   - `reasons`
@@ -78,7 +86,8 @@ Cloudflare Pages / Workers / D1 を用いて、フロントエンド、API、デ
   - `signs_of_resistance`
   - `signs_of_no_information`
   - `wants_to_stop`
-- インタビュー状態は、対象業務、業務理解の網羅性、深さ、イレギュラー網羅、ラポール、既知事実、質問済み内容等を保持する。
+- インタビュー状態は、対象業務、FRAM 6要素ごとの業務理解の網羅性と合計値、実践確認フラグ、深さ、イレギュラー網羅、ラポール、既知事実、質問済み内容等を保持する。
+- `task_coverage` はFRAM 6要素を各最大0.1で加算し、4要素以上で0.1、5要素以上で0.2、6要素で0.4の完了ボーナスを加える。`target_work` と `practices` は抽出・深さ判定には使うが、coverage自体には加算しない。
 - 深さは `personal_meanings` まで到達した場合に最大6段階として扱う。
 - AIは重複質問を避け、既知情報を前提として使う。
 

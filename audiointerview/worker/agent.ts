@@ -343,7 +343,7 @@ function buildConversationGuide(state: InterviewState, info: ExtractedInfo): Con
       should_ask_question: true,
       should_end: false,
       guidance:
-        '直前発話に、半構造化インタビューにおいて質問項目から脱線して発生した新しいトピックについて掘り下げる，ここぞの機会が含まれている。deep_dive_anchor に直接触れ、その新しい話題や具体的な発言について、理解を深める自然な一問を生成する。質問の切り口は発話の内容に応じて自律的に選ぶ。FRAMや深さの未充足を機械的に聞かず、直前発話から離れない。半構造化インタビューとは事前に決められた質問項目だけでなく柔軟に質問を変更していいのである．',
+        '直前発話に、半構造化インタビューにおいて質問項目から脱線して発生した新しいトピックについて対象業務の文脈で掘り下げる，ここぞの機会が含まれている。deep_dive_anchor に直接触れ、その新しい話題や具体的な発言について、理解を深める自然な一問を生成する。質問の切り口は発話の内容に応じて自律的に選ぶ。FRAMや深さの未充足を機械的に聞かず、直前発話から離れない。半構造化インタビューとは事前に決められた質問項目だけでなく柔軟に質問を変更していいのである．',
       priorities: ['deep_dive_anchor に直接乗る', '直前発話から離れない'],
       deep_dive_anchor: info.deep_dive_anchor,
     });
@@ -359,7 +359,29 @@ function buildConversationGuide(state: InterviewState, info: ExtractedInfo): Con
     });
   }
 
-  if (state.task_coverage < 0.7) {
+  if (state.task_coverage < 0.35) {
+    return base({
+      should_ask_question: true,
+      should_end: false,
+      guidance:
+        '対象業務のFRAM上の網羅的な理解がまだ浅い。不足している要素を内部で確認し、相手の直前発話から最も自然につながる方向を一つだけ選んで聞く。項目名を読み上げたり、質問票のように列挙したりしない。',
+      priorities: ['FRAM 6要素の不足を偏りなく補う', '相手の直前発話に乗る', '質問攻めにしない'],
+      dice_hint: 'D',
+    });
+  }
+
+  if (state.task_coverage < 0.5) {
+    if (state.task_depth < 3) {
+      return base({
+        should_ask_question: true,
+        should_end: false,
+        guidance:
+          '対象業務の表面的な流れは見えてきたが、理由・価値観・本音・経験・源泉はまだ浅い。ここぞという感じで、相手の発話に含まれる意味を自然に深める。既に分かっている理由を聞き直さない。',
+        priorities: ['対象業務(target work)に関する直前の発話について，それにまつわる意味を深める', '意図や理由などを自然に掘り下げてなぜそうするのかを尋ねる', 'ラポールを意識して、相手の発話に乗る', '仕事観や価値観を自然に探る'],
+        dice_hint: 'E',
+      });
+    }
+
     return base({
       should_ask_question: true,
       should_end: false,
@@ -451,6 +473,7 @@ async function generateUtterance(
 - deep_dive_anchor が guide にある場合は、その部分を起点に理解を深める質問を一つだけ作る。半構造化インタビューにおける柔軟な質問生成のタイミングである．質問の型は固定せず、anchor の内容に応じて「それはどういうことか」「どのくらいあるのか」など最も自然な聞き方を自分で選ぶ。
 - avoid_reasking に含まれることは絶対に聞き直さない。
 - use_as_known に含まれることは既知の前提として使う。
+- 長期記憶の参照情報が対話履歴にある場合も、現在の話と自然につながる必要があるときだけ使う。関連しない記憶を持ち出したり、「前に〜と言っていましたけど」「以前〜と話していましたが」と過去発言を定型的に引用したりしない。
 - 対象業務から勝手に離れない。
 
 DICEの使い方:
@@ -514,7 +537,7 @@ function updateAfterUtterance(state: InterviewState, utterance: string) {
 }
 
 function shouldEndInterview(state: InterviewState) {
-  return Boolean(state.target_work && state.practice_covered && state.task_coverage >= 0.7 && (state.high_depth_turn_count >= 2 || (state.task_coverage >= 1 && state.task_depth >= 6 && state.irregular_coverage >= 1)));
+  return Boolean(state.target_work && state.practice_covered && state.task_coverage >= 0.6 && (state.high_depth_turn_count >= 2 || (state.task_coverage >= 1 && state.task_depth >= 6 && state.irregular_coverage >= 1)));
 }
 
 function buildUseAsKnown(state: InterviewState) {

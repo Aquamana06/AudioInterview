@@ -194,6 +194,7 @@ function printInternals(result: Awaited<ReturnType<typeof runContextualInterview
       `turn=${result.state.turn_count}`,
       `網羅性=${formatNumber(result.state.task_coverage)}`,
       `FRAM=${JSON.stringify(result.state.task_coverage_by_fram)}`,
+      `実践確認=${result.state.practice_covered}`,
       `深さ=${formatNumber(result.state.task_depth)}`,
       `depth5+回数=${result.state.high_depth_turn_count ?? 0}`,
       `イレギュラー網羅=${formatNumber(result.state.irregular_coverage)}`,
@@ -203,6 +204,14 @@ function printInternals(result: Awaited<ReturnType<typeof runContextualInterview
 
   console.log('抽出項目:');
   if (result.extracted.target_work) console.log(`  target_work: ${result.extracted.target_work}`);
+  console.log(`  deep_dive_opportunity: ${result.extracted.deep_dive_opportunity}`);
+  if (result.extracted.deep_dive_anchor) console.log(`  deep_dive_anchor: ${result.extracted.deep_dive_anchor}`);
+  printList('fram_input', result.extracted.fram_input);
+  printList('fram_precondition', result.extracted.fram_precondition);
+  printList('fram_resource', result.extracted.fram_resource);
+  printList('fram_control', result.extracted.fram_control);
+  printList('fram_time', result.extracted.fram_time);
+  printList('fram_output', result.extracted.fram_output);
   printList('situations', result.extracted.situations);
   printList('practices', result.extracted.practices);
   printList('reasons', result.extracted.reasons);

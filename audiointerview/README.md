@@ -9,6 +9,8 @@
 npm run interview
 ```
 
+これは実験用エージェントではなく、本番の `worker/agent.ts` を呼び出す対話CLIです。coverageやFRAM内訳などの内部状態は既定で各ターンに表示されます。
+
 既定では各ターンの depth や抽出結果も表示します。会話だけを表示する場合は
 `npm run interview -- --no-debug`、言語を変える場合は
 `npm run interview -- --lang en`（`ja` / `en` / `de`）を使用します。
@@ -18,6 +20,20 @@ npm run interview
 インタビューモデルは起動時に切り替えられます。`original` は既存の単発モデル、`longitudinal` は今回追加した縦断型モデルです。縦断型では同じ参加者IDを指定すると、前回までのプロフィール・要約・因果記憶を引き継ぎます。
 
 `longitudinal` の第1セッションは、担当、役割・役職、経験、責任範囲、一日の流れなどを差し支えない範囲で尋ねるプロフィール形成回です。第2セッション以降は「先ほどの業務」から入り、既存の調整行動を起点とするインタビューへ自動的に切り替わります。
+
+coverageの変更を長期記憶なしで確認する場合は、次のように `original` を指定します。
+
+```bash
+npm run interview -- --model original --debug
+```
+
+本番の縦断型と同じ動作（長期記憶を含む）を確認する場合は、参加者IDを固定して実行します。
+
+```bash
+npm run interview -- --model longitudinal --participant test-user --debug
+```
+
+各ターンに `task_coverage`、FRAM 6要素の内訳、`practice_covered`、`task_depth`、抽出結果、`deep_dive_opportunity`、guideが表示されます。途中で `/state` を入力するとstate全体、`/memory` で縦断型の長期記憶を確認できます。
 
 ```bash
 npm run interview -- --model original

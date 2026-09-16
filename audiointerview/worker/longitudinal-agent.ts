@@ -77,7 +77,7 @@ function memoryMessage(memory: ContextualMemory, language: Language): MessageRow
     id: 'longitudinal_memory_context',
     session_id: 'memory',
     role: 'system',
-    content: `【過去セッションから得た参照情報】\n${JSON.stringify(context)}\nこの情報は今回の回答ではない。今回の具体的な業務と調整行動を起点にすること。関連する場合だけ、既知の事実として自然に接続する。過去の理由や価値観を今回にも当てはまると決めつけず、本人が語れる余地を残す。`,
+    content: `【過去セッションから得た参照情報】\n${JSON.stringify(context)}\nこの情報は今回の回答ではない。今回の具体的な業務と調整行動を起点にすること。引っ張ってくるべき関連情報がある場合だけ、既知の事実として自然に接続する。関連性が弱い情報は使わない。過去の理由や価値観を今回にも当てはまると決めつけず、本人が語れる余地を残す。「前に〜と言っていましたけど」「以前〜と話していましたが」など、過去の発言をそのまま引用する定型句は使わず、現在の話と自然につながる前提・比較・確認として短く扱う。`,
     input_mode: 'system',
     language,
     meta_json: JSON.stringify({ kind: 'longitudinal_memory_context' }),
@@ -96,7 +96,7 @@ export async function runContextualInterviewTurn(
   depthStagnationCount = 0,
 ): Promise<AgentResult> {
   const context = memoryMessage(relevantMemory, language);
-  const pivotInstruction = depthStagnationCount >= 3 ? depthPivotMessage(language, Boolean(context)) : null;
+  const pivotInstruction = depthStagnationCount >= 4 ? depthPivotMessage(language, Boolean(context)) : null;
   const history = [context, pivotInstruction, ...currentSessionHistory].filter((message): message is MessageRow => Boolean(message));
   const result = await runInterviewTurn(env, state, userInput, history, language);
   result.state.task_depth = Math.max(result.state.task_depth, calculateFlexibleDepth(result.state));
@@ -117,8 +117,8 @@ function calculateFlexibleDepth(state: InterviewState) {
 
 function depthPivotMessage(language: Language, hasMemory: boolean): MessageRow {
   const content = hasMemory
-    ? `【このターンだけの質問方針】depthが3回答ターン以上変化していない。これまでと同じ聞き方をやめ、質問の方向を大きく変えること。【過去セッションから得た参照情報】に含まれる過去セッションの具体情報、または初回プロフィールの仕事情報を一つ必ず発話に反映し、今回の対象業務とのつながり・違い・変化のいずれかを一問だけ尋ねること。過去情報が今回も当てはまるとは決めつけず、本人が訂正できる聞き方にすること。`
-    : `【このターンだけの質問方針】depthが3回答ターン以上変化していない。これまでと同じ聞き方をやめ、現在の会話で既知の具体的な業務場面・実践・経験を一つ必ず使い、比較・変化・葛藤・きっかけのいずれかへ質問の方向を大きく変えること。理由を同じ表現で聞き直さないこと。`;
+    ? `【このターンだけの質問方針】depthが4回答ターン以上変化していない。これまでと同じ聞き方をやめ、質問の方向を大きく変えること。参照情報に今回の対象業務と自然につながる具体情報があれば一つだけ使い、つながらない場合は無理に使わないこと。過去情報が今回も当てはまるとは決めつけず、本人が訂正できる聞き方にすること。「前に〜と言っていましたけど」など過去の発言をそのまま引用しないこと。`
+    : `【このターンだけの質問方針】depthが4回答ターン以上変化していない。これまでと同じ聞き方をやめ、質問の方向を大きく変えること。現在の会話で既知の具体的な業務場面・実践・経験を一つ使い、比較・変化・葛藤・きっかけのいずれかへ質問の方向を大きく変えること。理由を同じ表現で聞き直さないこと。`;
   return {
     id: 'terminal_depth_pivot',
     session_id: 'terminal',

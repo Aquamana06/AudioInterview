@@ -41,13 +41,14 @@ export function selectRelevantMemory(memory: ParticipantMemory, userInput: strin
   const scored = memory.nodes.map((node) => ({
     node,
     score: [...terms].reduce((score, term) => score + (node.text.toLowerCase().includes(term) ? 1 : 0), 0) + node.confidence * 0.25,
-  })).sort((a, b) => b.score - a.score).slice(0, limit).map(({ node }) => node);
+  })).filter(({ score }) => score >= 1).sort((a, b) => b.score - a.score).slice(0, limit).map(({ node }) => node);
   const ids = new Set(scored.map((node) => node.id));
   const summaries = memory.recent_summaries
     .map((summary, index) => ({
       summary,
       score: [...terms].reduce((score, term) => score + (summary.summary.toLowerCase().includes(term) ? 1 : 0), 0) + (index === 0 ? 0.5 : 0),
     }))
+    .filter(({ score }) => score >= 1)
     .sort((a, b) => b.score - a.score)
     .slice(0, 6)
     .map(({ summary }) => summary);

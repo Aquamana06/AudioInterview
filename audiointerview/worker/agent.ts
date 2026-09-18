@@ -19,6 +19,9 @@ const languageNames: Record<Language, string> = {
   de: 'German',
 };
 
+const RAPPORT_MODE_TURN = 8;
+const RAPPORT_MODE_MAX_TURN = 35;
+
 export function firstUtterance(language: Language) {
   return starters[language];
 }
@@ -48,6 +51,7 @@ export function initialState(): InterviewState {
     friction_count: 0,
     resistance_count: 0,
     turn_count: 0,
+    rapport_mode: false,
   };
 }
 
@@ -61,8 +65,17 @@ export async function runInterviewTurn(
   const extracted = await extractInfoForEvaluation(env, userInput, state, chatHistory);
   const nextState = updateStateFromExtractionForEvaluation(structuredClone(state), extracted);
   const guide = buildConversationGuide(nextState, extracted);
+  const rapportMode = Boolean(
+    nextState.rapport_mode ||
+      (nextState.turn_count >= RAPPORT_MODE_TURN && nextState.task_depth <= 3),
+  );
+  if (rapportMode) nextState.rapport_mode = true;
 
-  if (extracted.wants_to_stop || guide.should_end) {
+  if (
+    extracted.wants_to_stop ||
+    guide.should_end ||
+    (rapportMode && nextState.turn_count >= RAPPORT_MODE_MAX_TURN)
+  ) {
     return {
       text: endings[language],
       state: nextState,
@@ -72,7 +85,9 @@ export async function runInterviewTurn(
     };
   }
 
-  const generated = await generateUtterance(env, guide, nextState, userInput, chatHistory);
+  const generated = rapportMode
+    ? await generateRapportUtterance(env, nextState, userInput, chatHistory)
+    : await generateUtterance(env, guide, nextState, userInput, chatHistory);
   const localized = await localizeUtterance(env, generated, language);
   updateAfterUtterance(nextState, localized);
 
@@ -110,7 +125,7 @@ export async function extractInfoForEvaluation(env: RuntimeEnv, userInput: strin
   一番最初に話していた主題業務。
 
 - fram_input / fram_precondition / fram_resource / fram_control / fram_time / fram_output:
-  FRAMの6要素。順に、作業のきっかけ・処理対象、実行前の条件、必要・消費する資源、監督・調整する計画や手順、利用可能な時間や制約、作業の結果。直前発話に明示された事実だけを対応する配列へ抽出する。
+  FRAMの6要素。順に、作業のきっかけ・処理対象、実行前の条件、必要・消費する資源、手順書やマニュアル・監督・調整する計画や手順、利用可能な時間や制約、作業の結果。直前発話に明示された事実だけを対応する配列へ抽出する。
 
 - situations:
   混雑、休憩直後、忙しい時間帯、特定の客対応などの状況。
@@ -119,10 +134,10 @@ export async function extractInfoForEvaluation(env: RuntimeEnv, userInput: strin
   業務中にしていること、仕事の進め方、確認、対応。
 
 - reasons:
-  その実践や構えの理由。
+  その実践や構えの理由。基準、判断の根拠、意図、目的。
 
 - values:
-  価値観、本音、仕事観、責任感。
+  大事にしていること，価値観、本音、仕事観、責任感。
 
 - sources:
   経験、教育、教え、源泉。
@@ -359,7 +374,7 @@ function buildConversationGuide(state: InterviewState, info: ExtractedInfo): Con
     });
   }
 
-  if (state.task_coverage < 0.35) {
+  if (state.task_coverage < 0.40) {
     return base({
       should_ask_question: true,
       should_end: false,
@@ -376,8 +391,8 @@ function buildConversationGuide(state: InterviewState, info: ExtractedInfo): Con
         should_ask_question: true,
         should_end: false,
         guidance:
-          '対象業務の表面的な流れは見えてきたが、理由・価値観・本音・経験・源泉はまだ浅い。ここぞという感じで、相手の発話に含まれる意味を自然に深める。既に分かっている理由を聞き直さない。',
-        priorities: ['対象業務(target work)に関する直前の発話について，それにまつわる意味を深める', '意図や理由などを自然に掘り下げてなぜそうするのかを尋ねる', 'ラポールを意識して、相手の発話に乗る', '仕事観や価値観を自然に探る'],
+          '対象業務の表面的な流れは見えてきたが、理由・価値観・本音・経験・源泉はまだ浅い。ここぞという感じで、どうしてその必要性があるのか？どうしてそうするのか？なぜ大事なのか？など相手の発話に含まれる意味を自然に深める。既に分かっている理由を聞き直さない。',
+        priorities: ['対象業務(target work)に関する直前の発話について，それにまつわる意味を深める', '意図や理由,必要性や目的などを自然に掘り下げてなぜそうするのかを尋ねる', 'ラポールを意識して、相手の発話に乗る', '仕事観や価値観を自然に探る'],
         dice_hint: 'E',
       });
     }
@@ -408,7 +423,7 @@ function buildConversationGuide(state: InterviewState, info: ExtractedInfo): Con
       should_ask_question: true,
       should_end: false,
       guidance:
-        '対象業務の表面的な流れは見えてきたが、理由・価値観・本音・経験・源泉はまだ浅い。ここぞという感じで、相手の発話に含まれる意味を自然に深める。既に分かっている理由を聞き直さない。',
+        '対象業務の表面的な流れは見えてきたが、理由・価値観・本音・経験・源泉はまだ浅い。ここぞという感じで、どうしてその必要性があるのか？どうしてそうするのか？なぜ大事なのか？など、深く掘り下げて理解を深める。既に分かっている理由を聞き直さない。',
       priorities: ['対象業務(target work)について，それにまつわる意味を深める', '意図や理由などを自然に掘り下げてなぜそうするのかを尋ねる', 'ラポールを意識して、相手の発話に乗る', '仕事観や価値観を自然に探る'],
       dice_hint: 'E',
     });
@@ -501,6 +516,40 @@ ${latestAnswer}
   return text.trim() || fallbackQuestion(state);
 }
 
+async function generateRapportUtterance(
+  env: RuntimeEnv,
+  state: InterviewState,
+  latestAnswer: string,
+  chatHistory: MessageRow[],
+) {
+  const prompt = `あなたは、仕事について話す相手との信頼関係をつくる雑談エージェントです。
+
+この会話では、質問票を埋めたり、深さや網羅性を上げたりすることを目的にしません。相手と同じ目線で、ラフに仕事の内容、仕事中の気持ち、モチベーション、人柄について話してください。
+
+必ず守ること:
+- 直前の発話をよく受け止め、相手のキャラクターや温度感に合わせる。
+- 「ぶっちゃけどうなんですか」「それって実際どんな感じですか」のような、自然でくだけた聞き方を使ってよい。
+- 相手が話したくなさそうなことは追わない。答えを急かさず、共感や軽い相槌だけでもよい。
+- 業務の細部を尋問のように掘らない。仕事から自然につながる人柄、やりがい、しんどさ、きっかけ、普段の感覚を一つだけ話題にする。
+- 一度に一つだけ尋ねる。短い1〜2文にする。
+- 既に話されたことを機械的に聞き直さない。
+- 説明、分析、ラベルは付けず、次の発話だけを返す。
+
+【現在の state】
+${JSON.stringify({ turn_count: state.turn_count, task_depth: state.task_depth, rapport: state.rapport, persona_notes: state.persona_notes, known_facts: state.known_facts })}
+
+【対話履歴】
+${dumpMessages(chatHistory)}
+
+【直前の回答】
+${latestAnswer}
+
+相手がもっと話したくなる、自然でラフな発話を生成してください。`;
+
+  const text = await safeOpenaiText(env, prompt);
+  return text.trim() || fallbackRapportQuestion(state);
+}
+
 async function localizeUtterance(env: RuntimeEnv, text: string, language: Language) {
   if (language === 'ja' || !env.OPENAI_API_KEY) return text;
   const translated = await safeOpenaiText(
@@ -538,6 +587,12 @@ function updateAfterUtterance(state: InterviewState, utterance: string) {
 
 function shouldEndInterview(state: InterviewState) {
   return Boolean(state.target_work && state.practice_covered && state.task_coverage >= 0.6 && (state.high_depth_turn_count >= 2 || (state.task_coverage >= 1 && state.task_depth >= 6 && state.irregular_coverage >= 1)));
+}
+
+function fallbackRapportQuestion(state: InterviewState) {
+  if (state.persona_notes.length) return 'そういうところ、いかにもその人らしさが出ますね。実際のところ、その仕事のどんな瞬間が一番好きですか？';
+  if (state.target_work) return 'その仕事って、ぶっちゃけどんなところが大変なんですか？';
+  return '普段のお仕事って、実際どんな感じなんですか？';
 }
 
 function buildUseAsKnown(state: InterviewState) {

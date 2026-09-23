@@ -102,7 +102,8 @@ export async function runInterviewTurn(
 
 export async function extractInfoForEvaluation(env: RuntimeEnv, userInput: string, state: InterviewState, chatHistory: MessageRow[]) {
   const prompt = `あなたは半構造化インタビューの情報抽出器です。
-直前のインタビュイ発話から、対象業務に関する情報を構造化してください。
+**直前のインタビュイ発話**から、対象業務に関する情報を構造化してください。
+そのため，インタビュアの質問や発話は無視し、インタビュイの発話だけを対象にしてください。相槌とかだけでは情報がないと判断し、抽出しないでください。
 
 重要:
 - キーワード一致ではなく、対話の流れで判断する。
@@ -137,7 +138,7 @@ export async function extractInfoForEvaluation(env: RuntimeEnv, userInput: strin
   その実践や構えの理由。基準、判断の根拠、意図、目的。
 
 - values:
-  大事にしていること，価値観、本音、仕事観、責任感。
+  価値観、仕事観、責任感。
 
 - sources:
   経験、教育、教え、源泉。
@@ -338,7 +339,7 @@ function buildConversationGuide(state: InterviewState, info: ExtractedInfo): Con
       should_ask_question: false,
       should_end: false,
       guidance:
-        '質問が続いている。仕事に対する姿勢を知れるようなその業務やその人にまつわる軽い質問または確認をする',
+        '質問が続いている。仕事に対する姿勢を知れるようなその業務やその人にまつわる軽い質問または確認をする。',
       priorities: ['理解を返す(？で終わってもいい)', '業務や人柄への関心を自然に質問し雑談も許す'],
     });
   }
@@ -385,14 +386,14 @@ function buildConversationGuide(state: InterviewState, info: ExtractedInfo): Con
     });
   }
 
-  if (state.task_coverage < 0.5) {
+  if (state.task_coverage < 0.4) {
     if (state.task_depth < 3) {
       return base({
         should_ask_question: true,
         should_end: false,
         guidance:
           '対象業務の表面的な流れは見えてきたが、理由・価値観・本音・経験・源泉はまだ浅い。ここぞという感じで、どうしてその必要性があるのか？どうしてそうするのか？なぜ大事なのか？など相手の発話に含まれる意味を自然に深める。既に分かっている理由を聞き直さない。',
-        priorities: ['対象業務(target work)に関する直前の発話について，それにまつわる意味を深める', '意図や理由,必要性や目的などを自然に掘り下げてなぜそうするのかを尋ねる', 'ラポールを意識して、相手の発話に乗る', '仕事観や価値観を自然に探る'],
+        priorities: ['対象業務(target work)に関する直前の発話について，それにまつわる意味を深める', '意図や理由,必要性や目的などを自然に掘り下げてなぜそうするのかを尋ねる', 'ラポールを意識して、相手の発話に乗る', 'オープンクエスチョンを意識して，仕事観や価値観を自然に探る'],
         dice_hint: 'E',
       });
     }

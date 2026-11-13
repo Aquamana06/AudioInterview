@@ -19,8 +19,6 @@ const languageNames: Record<Language, string> = {
   de: 'German',
 };
 
-const INTERVIEW_COVERAGE_THRESHOLD = 0.45;
-
 export function firstUtterance(language: Language) {
   return starters[language];
 }
@@ -104,7 +102,7 @@ export async function extractInfoForEvaluation(env: RuntimeEnv, userInput: strin
 - values は、単なる好みや感想ではなく、業務で優先する判断基準・信念が明示された場合だけ抽出する。
 - personal_meanings は、個人的な経験と現在の仕事観のつながり、または本人にとっての仕事の意味が明示された場合だけ抽出する。
 - 同じ一文を複数の深さ項目へ安易に重複分類しない。判断に迷う場合は抽出しない。
-- 一つの事実がFRAMの複数要素に当てはまる場合は、それぞれの要素に抽出してよい。抽象的に推測せず、明示された事実だけ抽出する。
+- FRAMの6要素も同じ事実を複数要素へ重複分類しない。抽象的に推測せず、明示された事実だけ抽出する。
 - deep_dive_opportunity は、網羅性を埋めるための都合のよい合図として乱用しない。質問にするとしたら、直前発話の具体的な一部分に直接つながる一問が作れる場合だけ true。
 - 既に分かっていることは、必要に応じて維持してよいが、最新回答にないことを無理に追加しない。
 - reason/source は独立した質問項目ではなく、対象業務の深さを高める材料。
@@ -116,7 +114,7 @@ export async function extractInfoForEvaluation(env: RuntimeEnv, userInput: strin
   一番最初に話していた主題業務。
 
 - fram_input / fram_precondition / fram_resource / fram_control / fram_time / fram_output:
-  FRAMの6要素。順に、作業のきっかけ・処理対象、実行前の条件、必要・消費する資源、手順書やマニュアル・監督・調整する計画や手順、利用可能な時間や制約、作業の結果。Resourceには、作業中に必要または利用する情報、知識、能力、経験から得た技能、ソフトウェア、道具、人員などを含める。経験や知識は、その作業を行う際に使うものとして明示されている場合にResourceへ抽出する。直前発話に明示された事実を、該当する要素すべてへ抽出する。
+  FRAMの6要素。順に、作業のきっかけ・処理対象、実行前の条件、必要・消費する資源、手順書やマニュアル・監督・調整する計画や手順、利用可能な時間や制約、作業の結果。直前発話に明示された事実だけを対応する配列へ抽出する。
 
 - situations:
   混雑、休憩直後、忙しい時間帯、特定の客対応などの状況。
@@ -287,12 +285,12 @@ function updateFramCoverage(state: InterviewState, info: ExtractedInfo) {
 }
 
 function isWhyAnalysisMode(state: InterviewState) {
-  return Boolean(state.task_coverage >= INTERVIEW_COVERAGE_THRESHOLD && state.target_work && state.practice_covered && state.task_depth < 5);
+  return Boolean(state.task_coverage >= 0.6 && state.target_work && state.practice_covered && state.task_depth < 5);
 }
 
 function isIrregularFollowupMode(state: InterviewState) {
   return Boolean(
-    state.task_coverage >= INTERVIEW_COVERAGE_THRESHOLD &&
+    state.task_coverage >= 0.6 &&
       state.target_work &&
       state.practice_covered &&
       state.task_depth >= 5 &&
@@ -582,13 +580,7 @@ function updateAfterUtterance(state: InterviewState, utterance: string) {
 }
 
 function shouldEndInterview(state: InterviewState) {
-  return Boolean(
-    state.target_work &&
-      state.practice_covered &&
-      state.task_coverage >= INTERVIEW_COVERAGE_THRESHOLD &&
-      ((state.high_depth_turn_count >= 2 && state.irregular_coverage >= 0.7) ||
-        (state.task_coverage >= 1 && state.task_depth >= 6 && state.irregular_coverage >= 1)),
-  );
+  return Boolean(state.target_work && state.practice_covered && state.task_coverage >= 0.6 && (state.high_depth_turn_count >= 2 || (state.task_coverage >= 1 && state.task_depth >= 6 && state.irregular_coverage >= 1)));
 }
 
 function buildUseAsKnown(state: InterviewState) {

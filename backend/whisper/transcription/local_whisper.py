@@ -21,6 +21,32 @@ class LocalWhisper:
         self.compute_type = compute_type
         self._model: WhisperModel | None = None
         self._inference_lock = Lock()
+        self._warmed_up = False
+
+    @property
+    def ready(self) -> bool:
+        return self._warmed_up
+
+    def warmup(self) -> None:
+        """Exercise CUDA inference with silence; keep the same model for requests."""
+        import numpy as np
+
+        with self._inference_lock:
+            if self._warmed_up:
+                return
+            segments, _ = self.model.transcribe(
+                np.zeros(16000, dtype=np.float32), language="ja",
+                vad_filter=False, initial_prompt=TRANSCRIPTION_PROMPT,
+            )
+            # faster-whisper executes inference while consuming the generator.
+            for _ in segments:
+                pass
+            if load_config("whisper")["transcription"]["vad_filter"]:
+                # Also initialize the VAD session used by ordinary requests.
+                from faster_whisper.vad import get_speech_timestamps
+
+                get_speech_timestamps(np.zeros(16000, dtype=np.float32))
+            self._warmed_up = True
 
     @property
     def model(self) -> WhisperModel:

@@ -1,6 +1,8 @@
 """FastAPI application and backend entry point."""
 
 import argparse
+import asyncio
+import time
 
 import uvicorn
 
@@ -20,12 +22,22 @@ from api.auth import ensure_admin
 from api import routes
 from api.settings import BACKEND_ROOT
 from db.database import initialize_database
+from llm.client import configured, model as llm_model, status as llm_status
+from llm.local_qwen import warmup as warmup_qwen
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     initialize_database()
     ensure_admin()
+    logger = logging.getLogger("uvicorn.error")
+    started = time.monotonic()
+    if configured():
+        logger.info("Warming Qwen: %s", llm_model())
+        await asyncio.to_thread(warmup_qwen, llm_model())
+    logger.info("Warming Whisper: %s", routes.local_whisper.model_name)
+    await asyncio.to_thread(routes.local_whisper.warmup)
+    logger.info("Models ready; startup warmup took %.1fs", time.monotonic() - started)
     yield
 
 
@@ -77,7 +89,15 @@ async def internal_error(_: Request, error: Exception):
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "service": "audiointerview-backend"}
+    return {
+        "status": "ok", "service": "audiointerview-backend",
+        "models": {"llm": llm_status(), "whisper": {
+            "model": routes.local_whisper.model_name,
+            "device": routes.local_whisper.device,
+            "computeType": routes.local_whisper.compute_type,
+            "ready": routes.local_whisper.ready,
+        }},
+    }
 
 
 FRONTEND_DIST = BACKEND_ROOT.parent / "frontend" / "dist"

@@ -17,7 +17,9 @@ FastAPI アプリ、インタビュー処理、LLM 接続、Local Whisper、SQLi
 
 Vite 開発サーバーから接続する場合、ポート変更時は frontend/vite.config.ts の proxy 接続先も同じポートに変更してください。
 
-Transformers の `AutoProcessor` / `AutoModelForMultimodalLM` を使い、`Qwen/Qwen3.5-9B` をローカルで直接実行します。別のサーバーは不要です。初回の生成時にモデルをダウンロードし、以後はキャッシュを再利用します。RTX 5090（32GB）で Whisper と併用するため、9B モデルを `device_map="cuda:0"`、`dtype="bfloat16"` で GPU に配置します。CPU へは自動退避しません。重みは約18GiB（約19.3GB）で、残りを推論キャッシュや Whisper に利用します。入力は最大8192トークン、生成は最大2048トークンです。CUDA が使えない場合や入力上限を超えた場合はエラーになります。
+Transformers の `AutoProcessor` / `AutoModelForMultimodalLM` を使い、`Qwen/Qwen3.6-27B` をローカルで直接実行します。別のサーバーは不要です。RTX 5090（32GB）で Whisper と併用するため、bitsandbytes の4bit NF4・二重量子化で重みを圧縮し、演算は BF16、配置は `cuda:0` に固定します。CPU へは自動退避しません。量子化は `llm/config.yaml` の `quantization` で設定でき、この項目を削除すると非量子化になりますが、27B の BF16 は32GBに収まりません。入力は最大8192トークン、生成は最大2048トークンです。CUDA が使えない場合や入力上限を超えた場合はエラーになります。
+
+API 起動時に Qwen の短い生成と Whisper の無音認識・VAD 初期化を実行し、両方が完了してからリクエストを受け付けます。モデルはウォームアップと通常リクエストで共有し、プロセス終了まで常駐します。初回起動は公式モデル重み（約55GB）のダウンロードと量子化に時間がかかります。以後はダウンロードキャッシュを再利用しますが、プロセス再起動時は読み込み・量子化・ウォームアップを再実行します。起動時にモデルの準備が失敗した場合は API の起動も失敗させます。`/health` の `models.llm.ready` / `models.whisper.ready`、`/api/status` の `ready` で確認できます。Whisper 単独の `python -m whisper.main` も起動時にウォームアップします。
 
 ## 設定
 
@@ -25,7 +27,7 @@ Transformers の `AutoProcessor` / `AutoModelForMultimodalLM` を使い、`Qwen/
 
 | ファイル | 調整する値 |
 | --- | --- |
-| `llm/config.yaml` | モデル ID / ローカルパス、デバイス配置、精度、入力上限、thinking、生成上限・サンプリング |
+| `llm/config.yaml` | モデル ID / ローカルパス、デバイス配置、精度・量子化、入力上限、thinking、生成上限・サンプリング |
 | `whisper/config.yaml` | faster-whisper のモデル、デバイス、計算精度、VAD |
 | `interview/config.yaml` | 履歴件数、終了判定、スコア加点、関連記憶の検索件数 |
 | `db/config.yaml` | DB パス、接続待ち時間、記憶の取得件数 |
@@ -63,4 +65,6 @@ GPU 関連の依存関係をインストールせず実行する場合:
 
 RTX 5090 のドライバー570系に合わせ、uv は PyTorch / torchvision を公式の CUDA 12.8 配布元から取得します。`uv sync --locked` で反映してください。モデル設定に加え、GPUドライバーに対応したPyTorchが必要です。
 
-2026-11-13 の RTX 5090 実機確認では、Qwen3.5-9B の全パラメーターが `cuda:0` に配置され、日本語の生成が成功しました。Whisper-small を CUDA に同時常駐させた状態でも生成でき、空きVRAMは約12.66GiBでした（短い入力・生成上限64トークンでの計測。長文時は使用量が増えます）。Whisper の CUDA 認識処理と WAV のデコードも確認済みです。faster-whisper 1.2.x と互換性を保つため、PyAV は19未満に固定しています。
+faster-whisper 1.2.x と互換性を保つため、PyAV は19未満に固定しています。
+
+2026-11-13 の RTX 5090 実測では、Qwen3.6-27B（4bit NF4）と Whisper-small（CUDA / FP16）の起動時ウォームアップ、API 経由の質問生成・JSON 情報抽出・音声認識が成功しました。両モデルを GPU 常駐させたウォームアップ直後は約18.2GiB、約7960トークン入力の短い要約後は約22.1GiBを使用しました（`nvidia-smi`。後者の生成上限は64トークン。PyTorch の予約領域も含み、負荷によって増減します）。通常の質問生成は約1.1秒、9.2秒の音声認識は約0.26秒、抽出と質問生成を含む回答投稿は約6.8秒でした。入力内容と出力長に依存する単発の測定値です。

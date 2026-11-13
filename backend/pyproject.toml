@@ -5,6 +5,7 @@ description = "Python API and local AI services for AudioInterview"
 requires-python = ">=3.11"
 dependencies = [
     "accelerate>=1.0.0",
+    "bitsandbytes>=0.49.2",
     # faster-whisper 1.2.x still passes metadata_errors to PyAV.
     "av>=11,<19",
     "pillow>=11.0.0",

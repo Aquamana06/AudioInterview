@@ -17,6 +17,8 @@ class WhisperStub:
         self.device = "cpu"
         self.compute_type = "int8"
         self.transcribe = MagicMock(side_effect=AssertionError("Unexpected Whisper inference"))
+        self.warmup = MagicMock()
+        self.ready = False
 
 
 whisper_module = types.ModuleType("whisper.transcription.local_whisper")

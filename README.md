@@ -21,7 +21,7 @@ analyze/                  データ分析スクリプト
 cd backend
 uv sync
 cp .env.example .env
-# 既定ではローカル Qwen/Qwen3.5-9B を使用
+# 既定ではローカル Qwen/Qwen3.6-27B（4bit）を使用
 uv run main.py
 ```
 
@@ -37,7 +37,7 @@ npm install
 npm run dev
 ```
 
-ブラウザで `http://127.0.0.1:5173` を開きます。LLM は既定で Transformers を使って `Qwen/Qwen3.5-9B` を直接ローカル実行します。初回生成時にモデルをダウンロードするため、十分な GPU / RAM と保存容量が必要です。`backend/llm/config.yaml` でモデル ID またはローカルパスを指定できます。Whisper のモデル、デバイス、計算精度は `backend/whisper/config.yaml` で指定できます。
+ブラウザで `http://127.0.0.1:5173` を開きます。LLM は既定で Transformers を使って `Qwen/Qwen3.6-27B` を4bit（NF4）で直接ローカル実行します。起動時に Qwen と Whisper を読み込み、ウォームアップ完了後に API の受付を開始します。以後は両モデルを同じプロセス内に常駐させます。初回起動は公式モデル重みのダウンロード（約55GB）と量子化に時間がかかるため、十分な GPU / RAM と保存容量が必要です。`backend/llm/config.yaml` でモデル ID またはローカルパス、量子化を指定できます。Whisper のモデル、デバイス、計算精度は `backend/whisper/config.yaml` で指定できます。`/health` の `models` と `/api/status` の `ready` でウォームアップ状態を確認できます。
 
 ## 既存コマンド
 

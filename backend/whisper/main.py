@@ -1,4 +1,5 @@
 import asyncio
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -20,7 +21,13 @@ whisper = LocalWhisper(
     setting("FASTER_WHISPER_COMPUTE_TYPE", CONFIG["compute_type"]),
 )
 
-app = FastAPI(title="AudioInterview Local Whisper Backend")
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    await asyncio.to_thread(whisper.warmup)
+    yield
+
+
+app = FastAPI(title="AudioInterview Local Whisper Backend", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origin_regex=r"https?://(localhost|127\.0\.0\.1|192\.168\.\d+\.\d+|100\.64\.\d+\.\d+)(:\d+)?",
@@ -31,13 +38,14 @@ app.add_middleware(
 
 
 @app.get("/health")
-def health() -> dict[str, str]:
+def health() -> dict[str, str | bool]:
     return {
         "status": "ok",
         "transcription": "faster-whisper",
         "model": whisper.model_name,
         "device": whisper.device,
         "computeType": whisper.compute_type,
+        "ready": whisper.ready,
     }
 
 

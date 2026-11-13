@@ -40,8 +40,11 @@ async def complete_json(prompt: str, schema: dict[str, Any]) -> dict:
 
 
 def status() -> dict[str, Any]:
+    from llm.local_qwen import is_ready
+
     return {
         "configured": configured(),
+        "ready": is_ready(model()),
         "provider": "local",
         "textModel": model(),
     }

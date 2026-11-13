@@ -109,8 +109,6 @@ export interface InterviewState {
   friction_count: number;
   resistance_count: number;
   turn_count: number;
-  /** Once enabled, the interviewer stays in rapport-building small-talk mode. */
-  rapport_mode?: boolean;
 }
 
 export interface ConversationGuide {

@@ -19,8 +19,7 @@ const languageNames: Record<Language, string> = {
   de: 'German',
 };
 
-const RAPPORT_MODE_TURN = 8;
-const RAPPORT_MODE_MAX_TURN = 35;
+const INTERVIEW_COVERAGE_THRESHOLD = 0.45;
 
 export function firstUtterance(language: Language) {
   return starters[language];
@@ -51,7 +50,6 @@ export function initialState(): InterviewState {
     friction_count: 0,
     resistance_count: 0,
     turn_count: 0,
-    rapport_mode: false,
   };
 }
 
@@ -64,18 +62,11 @@ export async function runInterviewTurn(
 ): Promise<AgentResult> {
   const extracted = await extractInfoForEvaluation(env, userInput, state, chatHistory);
   const nextState = updateStateFromExtractionForEvaluation(structuredClone(state), extracted);
+  // Remove this field from states saved by older versions that had small-talk mode.
+  delete (nextState as InterviewState & { rapport_mode?: boolean }).rapport_mode;
   const guide = buildConversationGuide(nextState, extracted);
-  const rapportMode = Boolean(
-    nextState.rapport_mode ||
-      (nextState.turn_count >= RAPPORT_MODE_TURN && nextState.task_depth <= 3),
-  );
-  if (rapportMode) nextState.rapport_mode = true;
 
-  if (
-    extracted.wants_to_stop ||
-    guide.should_end ||
-    (rapportMode && nextState.turn_count >= RAPPORT_MODE_MAX_TURN)
-  ) {
+  if (extracted.wants_to_stop || guide.should_end) {
     return {
       text: endings[language],
       state: nextState,
@@ -85,9 +76,7 @@ export async function runInterviewTurn(
     };
   }
 
-  const generated = rapportMode
-    ? await generateRapportUtterance(env, nextState, userInput, chatHistory)
-    : await generateUtterance(env, guide, nextState, userInput, chatHistory);
+  const generated = await generateUtterance(env, guide, nextState, userInput, chatHistory);
   const localized = await localizeUtterance(env, generated, language);
   updateAfterUtterance(nextState, localized);
 
@@ -109,12 +98,13 @@ export async function extractInfoForEvaluation(env: RuntimeEnv, userInput: strin
 - キーワード一致ではなく、対話の流れで判断する。
 - 想像で補わない。
 - 抽象的・一般的な表現を、深さの根拠として過大評価しない。
-- reasons は、具体的な実践や判断と「なぜ」が明示的に結び付いている場合だけ抽出する。
+- reasons は、具体的な実践や判断と理由・目的・判断基準が、直前発話で明示的に結び付いている場合だけ抽出する。
+- 相手が理由の背景まで明示した場合は、その内容も抽出してよい。ただし、理由からさらに別の理由を推測して因果の連鎖を作らない。直前発話にない「理由の理由」は補わない。
 - sources は、経験・教育・他者からの教えなど、考え方の形成源が具体的に語られた場合だけ抽出する。
 - values は、単なる好みや感想ではなく、業務で優先する判断基準・信念が明示された場合だけ抽出する。
 - personal_meanings は、個人的な経験と現在の仕事観のつながり、または本人にとっての仕事の意味が明示された場合だけ抽出する。
 - 同じ一文を複数の深さ項目へ安易に重複分類しない。判断に迷う場合は抽出しない。
-- FRAMの6要素も同じ事実を複数要素へ重複分類しない。抽象的に推測せず、明示された事実だけ抽出する。
+- 一つの事実がFRAMの複数要素に当てはまる場合は、それぞれの要素に抽出してよい。抽象的に推測せず、明示された事実だけ抽出する。
 - deep_dive_opportunity は、網羅性を埋めるための都合のよい合図として乱用しない。質問にするとしたら、直前発話の具体的な一部分に直接つながる一問が作れる場合だけ true。
 - 既に分かっていることは、必要に応じて維持してよいが、最新回答にないことを無理に追加しない。
 - reason/source は独立した質問項目ではなく、対象業務の深さを高める材料。
@@ -126,7 +116,7 @@ export async function extractInfoForEvaluation(env: RuntimeEnv, userInput: strin
   一番最初に話していた主題業務。
 
 - fram_input / fram_precondition / fram_resource / fram_control / fram_time / fram_output:
-  FRAMの6要素。順に、作業のきっかけ・処理対象、実行前の条件、必要・消費する資源、手順書やマニュアル・監督・調整する計画や手順、利用可能な時間や制約、作業の結果。直前発話に明示された事実だけを対応する配列へ抽出する。
+  FRAMの6要素。順に、作業のきっかけ・処理対象、実行前の条件、必要・消費する資源、手順書やマニュアル・監督・調整する計画や手順、利用可能な時間や制約、作業の結果。Resourceには、作業中に必要または利用する情報、知識、能力、経験から得た技能、ソフトウェア、道具、人員などを含める。経験や知識は、その作業を行う際に使うものとして明示されている場合にResourceへ抽出する。直前発話に明示された事実を、該当する要素すべてへ抽出する。
 
 - situations:
   混雑、休憩直後、忙しい時間帯、特定の客対応などの状況。
@@ -135,7 +125,7 @@ export async function extractInfoForEvaluation(env: RuntimeEnv, userInput: strin
   業務中にしていること、仕事の進め方、確認、対応。
 
 - reasons:
-  その実践や構えの理由。基準、判断の根拠、意図、目的。
+  その実践や構えの理由。基準、判断の根拠、意図、目的。相手が理由の背景を明示した場合はその内容も含めるが、発話にない因果関係は推測しない。
 
 - values:
   価値観、仕事観、責任感。
@@ -296,6 +286,20 @@ function updateFramCoverage(state: InterviewState, info: ExtractedInfo) {
   state.task_coverage = Math.min(1, Number((baseCoverage + completionBonus).toFixed(2)));
 }
 
+function isWhyAnalysisMode(state: InterviewState) {
+  return Boolean(state.task_coverage >= INTERVIEW_COVERAGE_THRESHOLD && state.target_work && state.practice_covered && state.task_depth < 5);
+}
+
+function isIrregularFollowupMode(state: InterviewState) {
+  return Boolean(
+    state.task_coverage >= INTERVIEW_COVERAGE_THRESHOLD &&
+      state.target_work &&
+      state.practice_covered &&
+      state.task_depth >= 5 &&
+      state.irregular_coverage < 0.7,
+  );
+}
+
 function buildConversationGuide(state: InterviewState, info: ExtractedInfo): ConversationGuide {
   const base = (guide: Omit<ConversationGuide, 'avoid_reasking' | 'use_as_known'>): ConversationGuide => ({
     ...guide,
@@ -334,16 +338,6 @@ function buildConversationGuide(state: InterviewState, info: ExtractedInfo): Con
     });
   }
 
-  if (state.consecutive_questions >= 2) {
-    return base({
-      should_ask_question: false,
-      should_end: false,
-      guidance:
-        '質問が続いている。仕事に対する姿勢を知れるようなその業務やその人にまつわる軽い質問または確認をする。',
-      priorities: ['理解を返す(？で終わってもいい)', '業務や人柄への関心を自然に質問し雑談も許す'],
-    });
-  }
-
   if (info.signs_of_resistance.length || info.signs_of_no_information.length) {
     return base({
       should_ask_question: false,
@@ -351,6 +345,40 @@ function buildConversationGuide(state: InterviewState, info: ExtractedInfo): Con
       guidance:
         '相手が答えづらそう、または情報が出にくい。無理に深掘りせず、対話履歴に沿った質問をする必要ならここまで分かっていることを短くまとめる。',
       priorities: ['会話の圧を下げる', '質問しない', 'これまでの発話内容を丁寧に見返す', '印象に残ったエピソードや工夫みたいな類の聞きかたはNG'],
+    });
+  }
+
+  // Once FRAM coverage and practice understanding are sufficient, keep
+  // exploring why from the conversation history until depth 5.
+  if (isWhyAnalysisMode(state)) {
+    return base({
+      should_ask_question: true,
+      should_end: false,
+      guidance:
+        'FRAMの網羅性と実践の理解は一定水準に達した。直近の回答だけに限定せず、対話履歴や既知情報に出ている具体的な行動・判断・手順から一つ選び、なぜそれをするのか、なぜ大切なのか、何を避けたり実現したりするためかを一段掘り下げる。直前に理由が語られた場合は、その理由がなぜ大切なのか、どんな考えや経験につながるのかなど、答えから続く次の「なぜ」を尋ねる。同じ質問を繰り返さず、同じ行動に別の未確認の理由を尋ねるために履歴へ戻るのはよい。',
+      priorities: ['最新回答が短くても履歴中の具体的な行動・判断・手順を使う', '一つの対象について理由や意味を一段ずつ掘り下げる', '理由の先にある理由・大切さ・経験も、会話の流れに沿って尋ねる', '質問は一度に一つ、同じ質問は繰り返さない'],
+      dice_hint: 'E',
+    });
+  }
+
+  if (isIrregularFollowupMode(state)) {
+    return base({
+      should_ask_question: true,
+      should_end: false,
+      guidance:
+        '理由や考え方の深掘りが進んだので、対象業務で予定どおりに進まない時や、他の作業・人・時間の影響でやり方を変える時のことを一つ尋ねる。対話履歴に出ている具体的な状況があれば自然につなげる。',
+      priorities: ['対象業務のイレギュラーな状況や変化を一つ尋ねる', '履歴にある具体例につなげる', '相手を責めず、細部を尋問しない'],
+      dice_hint: 'C',
+    });
+  }
+
+  if (state.consecutive_questions >= 2) {
+    return base({
+      should_ask_question: false,
+      should_end: false,
+      guidance:
+        '質問が続いている。仕事に対する姿勢を知れるようなその業務やその人にまつわる軽い質問または確認をする。',
+      priorities: ['理解を返す(？で終わってもいい)', '業務や人柄への関心を自然に質問し雑談も許す'],
     });
   }
 
@@ -424,8 +452,8 @@ function buildConversationGuide(state: InterviewState, info: ExtractedInfo): Con
       should_ask_question: true,
       should_end: false,
       guidance:
-        '対象業務の表面的な流れは見えてきたが、理由・価値観・本音・経験・源泉はまだ浅い。ここぞという感じで、どうしてその必要性があるのか？どうしてそうするのか？なぜ大事なのか？など、深く掘り下げて理解を深める。既に分かっている理由を聞き直さない。',
-      priorities: ['対象業務(target work)について，それにまつわる意味を深める', '意図や理由などを自然に掘り下げてなぜそうするのかを尋ねる', 'ラポールを意識して、相手の発話に乗る', '仕事観や価値観を自然に探る'],
+        '対象業務の表面的な流れは見えてきたが、理由・価値観・経験・源泉はまだ浅い。直近の発話に出た具体的な実践や判断を一つ選び、その理由・狙い・判断基準を自然に尋ねる。理由が分かった後は、その回答に新しい手がかりがあり自然につながる場合だけ、背景にある経験や大切にしていることへ一段掘り下げる。機械的に「なぜ」を繰り返さず、既に分かっている理由は聞き直さない。',
+      priorities: ['直近の具体的な実践や判断を一つ選ぶ', 'その理由・狙い・判断基準を相手の発話に乗って尋ねる', '新しい手がかりがある場合だけ背景へ一段掘り下げる', 'ラポールを保ち、質問は一度に一つにする'],
       dice_hint: 'E',
     });
   }
@@ -487,7 +515,8 @@ async function generateUtterance(
 - 相手の発話の要約は、質問に必要な最小限の一節だけにする。
 - should_answer_user_question が true の場合は、相手の確認・逆質問に短く答える。
 - deep_dive_anchor が guide にある場合は、その部分を起点に理解を深める質問を一つだけ作る。半構造化インタビューにおける柔軟な質問生成のタイミングである．質問の型は固定せず、anchor の内容に応じて「それはどういうことか」「どのくらいあるのか」など最も自然な聞き方を自分で選ぶ。
-- avoid_reasking に含まれることは絶対に聞き直さない。
+- guide が深掘りを求めている場合は、直近の回答だけでなく対話履歴・use_as_known・state.known_facts から具体的な行動、判断、手順を選び、答えに含まれる理由のさらに背景にある理由や大切さを一段掘り下げる。最新回答が短くても、既出の具体的な話を起点にしてよい。
+- avoid_reasking は、同じ質問やすでに得た事実をそのまま尋ね直さないために使う。深掘り中は、既知の行動や判断に戻り、まだ尋ねていない理由・意味・背景を尋ねてよい。既知の事実を使うこと自体を避けない。
 - use_as_known に含まれることは既知の前提として使う。
 - 長期記憶の参照情報が対話履歴にある場合も、現在の話と自然につながる必要があるときだけ使う。関連しない記憶を持ち出したり、「前に〜と言っていましたけど」「以前〜と話していましたが」と過去発言を定型的に引用したりしない。
 - 対象業務から勝手に離れない。
@@ -515,40 +544,6 @@ ${latestAnswer}
 
   const text = await safeOpenaiText(env, prompt);
   return text.trim() || fallbackQuestion(state);
-}
-
-async function generateRapportUtterance(
-  env: RuntimeEnv,
-  state: InterviewState,
-  latestAnswer: string,
-  chatHistory: MessageRow[],
-) {
-  const prompt = `あなたは、仕事について話す相手との信頼関係をつくる雑談エージェントです。
-
-この会話では、質問票を埋めたり、深さや網羅性を上げたりすることを目的にしません。相手と同じ目線で、ラフに仕事の内容、仕事中の気持ち、モチベーション、人柄について話してください。
-
-必ず守ること:
-- 直前の発話をよく受け止め、相手のキャラクターや温度感に合わせる。
-- 「ぶっちゃけどうなんですか」「それって実際どんな感じですか」のような、自然でくだけた聞き方を使ってよい。
-- 相手が話したくなさそうなことは追わない。答えを急かさず、共感や軽い相槌だけでもよい。
-- 業務の細部を尋問のように掘らない。仕事から自然につながる人柄、やりがい、しんどさ、きっかけ、普段の感覚を一つだけ話題にする。
-- 一度に一つだけ尋ねる。短い1〜2文にする。
-- 既に話されたことを機械的に聞き直さない。
-- 説明、分析、ラベルは付けず、次の発話だけを返す。
-
-【現在の state】
-${JSON.stringify({ turn_count: state.turn_count, task_depth: state.task_depth, rapport: state.rapport, persona_notes: state.persona_notes, known_facts: state.known_facts })}
-
-【対話履歴】
-${dumpMessages(chatHistory)}
-
-【直前の回答】
-${latestAnswer}
-
-相手がもっと話したくなる、自然でラフな発話を生成してください。`;
-
-  const text = await safeOpenaiText(env, prompt);
-  return text.trim() || fallbackRapportQuestion(state);
 }
 
 async function localizeUtterance(env: RuntimeEnv, text: string, language: Language) {
@@ -587,13 +582,13 @@ function updateAfterUtterance(state: InterviewState, utterance: string) {
 }
 
 function shouldEndInterview(state: InterviewState) {
-  return Boolean(state.target_work && state.practice_covered && state.task_coverage >= 0.6 && (state.high_depth_turn_count >= 2 || (state.task_coverage >= 1 && state.task_depth >= 6 && state.irregular_coverage >= 1)));
-}
-
-function fallbackRapportQuestion(state: InterviewState) {
-  if (state.persona_notes.length) return 'そういうところ、いかにもその人らしさが出ますね。実際のところ、その仕事のどんな瞬間が一番好きですか？';
-  if (state.target_work) return 'その仕事って、ぶっちゃけどんなところが大変なんですか？';
-  return '普段のお仕事って、実際どんな感じなんですか？';
+  return Boolean(
+    state.target_work &&
+      state.practice_covered &&
+      state.task_coverage >= INTERVIEW_COVERAGE_THRESHOLD &&
+      ((state.high_depth_turn_count >= 2 && state.irregular_coverage >= 0.7) ||
+        (state.task_coverage >= 1 && state.task_depth >= 6 && state.irregular_coverage >= 1)),
+  );
 }
 
 function buildUseAsKnown(state: InterviewState) {

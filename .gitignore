@@ -1,8 +1,23 @@
 .DS_Store
 data
+**/__pycache__/
+**/*.py[cod]
+**/.venv*/
+**/.vite/
+**/.wrangler/
+**/dist/
+**/node_modules/
+**/.terminal-interview-build/
+**/.causal-interview-build/
+backend/.env
+backend/.env.*
+!backend/.env.example
+backend/.terminal-interview-memory.local
+backend/instance/
 
 # Large Whisper model weights are kept locally and are not committed.
-models/whisper-small/flax_model.msgpack
-models/whisper-small/model.safetensors
-models/whisper-small/pytorch_model.bin
-models/whisper-small/tf_model.h5
+backend/whisper/models/whisper-small/flax_model.msgpack
+backend/whisper/models/whisper-small/model.safetensors
+backend/whisper/models/whisper-small/pytorch_model.bin
+backend/whisper/models/whisper-small/tf_model.h5
+backend/whisper/models/whisper-small/.cache/

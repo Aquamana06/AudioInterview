@@ -1,0 +1,35 @@
+[project]
+name = "audiointerview-backend"
+version = "0.1.0"
+description = "Python API and local AI services for AudioInterview"
+requires-python = ">=3.11"
+dependencies = [
+    "accelerate>=1.0.0",
+    # faster-whisper 1.2.x still passes metadata_errors to PyAV.
+    "av>=11,<19",
+    "pillow>=11.0.0",
+    "torch>=2.6.0",
+    "torchvision>=0.21.0",
+    "transformers>=5.0.0",
+    "ctranslate2>=4.4.0",
+    "fastapi>=0.115.0",
+    "faster-whisper>=1.1.0",
+    "httpx>=0.27.0",
+    "python-multipart>=0.0.9",
+    "python-dotenv>=1.0.1",
+    "pyyaml>=6.0.2",
+    "uvicorn[standard]>=0.30.0",
+]
+
+[tool.uv]
+package = false
+
+# RTX 5090 / driver 570 (CUDA 12.8). Avoid newer CUDA runtimes from PyPI.
+[tool.uv.sources]
+torch = { index = "pytorch-cu128" }
+torchvision = { index = "pytorch-cu128" }
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true

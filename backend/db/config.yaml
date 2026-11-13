@@ -1,0 +1,8 @@
+database:
+  path: ./instance/audiointerview.sqlite3
+  timeout_seconds: 30
+memory:
+  recent_summaries: 5
+  nodes: 80
+  edges: 120
+  prompt_summaries: 3

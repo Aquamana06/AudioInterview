@@ -1,0 +1,6 @@
+# auto: GPU があれば CUDA / float16、なければ CPU / int8。
+model: small
+device: auto
+compute_type: auto
+transcription:
+  vad_filter: true

@@ -1,0 +1,12 @@
+# モデル ID はローカルディレクトリにも変更可能。
+model: Qwen/Qwen3.5-9B
+device_map: cuda:0
+dtype: bfloat16
+max_input_tokens: 8192
+enable_thinking: false
+generation:
+  max_new_tokens: 2048
+  do_sample: true
+  temperature: 0.7
+  top_p: 0.8
+  top_k: 20

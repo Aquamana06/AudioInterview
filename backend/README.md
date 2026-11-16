@@ -17,6 +17,15 @@ FastAPI アプリ、インタビュー処理、LLM 接続、Local Whisper、SQLi
 
 Vite 開発サーバーから接続する場合、ポート変更時は frontend/vite.config.ts の proxy 接続先も同じポートに変更してください。
 
+起動したターミナルの標準出力に、時刻・セッション ID 付きの `[interview]` ログを自動表示します。`uvicorn main:app` で起動した場合も同じです。
+
+- 開始時: 初回プロフィール面談／通常面談の区別、初期状態、保存済みの記憶。
+- 各回答後 (`turn_completed`): `task_coverage_by_fram`（FRAM の6側面）、`task_coverage`、`task_depth`、`irregular_coverage`、`rapport` などの状態値、抽出情報、`guide`（質問方針）、生成した発話。`state.known_facts` と `state.persona_notes` に面談中の記憶が表示されます。
+- 通常面談中: 参照した過去の要約・記憶 (`memory_referenced`) と、深さが停滞した際の追加方針 (`stagnation_guidance`)。
+- 終了後: 要約生成開始 (`memory_finalizing`) と、DB 保存が完了した要約・プロフィール・記憶 (`memory_saved`)。生成を省略した場合や失敗した場合も表示します。要約はバックグラウンドで生成するため、終了操作の少し後に表示されます。
+
+回答編集による再計算は `replay: true` として表示します。初回プロフィール面談では FRAM・depth などのスコアは更新せず、`profileExtraction` と `persona_notes` に抽出内容を表示します。ログには実際の要約・記憶の内容が含まれます。
+
 Transformers の `AutoProcessor` / `AutoModelForMultimodalLM` を使い、`Qwen/Qwen3.6-27B` をローカルで直接実行します。別のサーバーは不要です。RTX 5090（32GB）で Whisper と併用するため、bitsandbytes の4bit NF4・二重量子化で重みを圧縮し、演算は BF16、配置は `cuda:0` に固定します。CPU へは自動退避しません。量子化は `llm/config.yaml` の `quantization` で設定でき、この項目を削除すると非量子化になりますが、27B の BF16 は32GBに収まりません。入力は最大8192トークン、生成は最大2048トークンです。CUDA が使えない場合や入力上限を超えた場合はエラーになります。
 
 API 起動時に Qwen の短い生成と Whisper の無音認識・VAD 初期化を実行し、両方が完了してからリクエストを受け付けます。モデルはウォームアップと通常リクエストで共有し、プロセス終了まで常駐します。初回起動は公式モデル重み（約55GB）のダウンロードと量子化に時間がかかります。以後はダウンロードキャッシュを再利用しますが、プロセス再起動時は読み込み・量子化・ウォームアップを再実行します。起動時にモデルの準備が失敗した場合は API の起動も失敗させます。`/health` の `models.llm.ready` / `models.whisper.ready`、`/api/status` の `ready` で確認できます。Whisper 単独の `python -m whisper.main` も起動時にウォームアップします。

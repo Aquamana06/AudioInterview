@@ -40,6 +40,7 @@ class ConnectivityTests(DatabaseTestCase):
         return response.json()
 
     def test_operator_profile_memory_and_followup_agent(self):
+        logs = self.enterContext(self.assertLogs("audiointerview", level="INFO"))
         self.request('POST', '/auth/login', json={'id': 'admin', 'password': 'admin'})
         issued = self.request('POST', '/admin/accounts', json={'id': 'integration_operator', 'displayName': '接続確認'})
         self.request('POST', '/auth/logout')
@@ -66,6 +67,17 @@ class ConnectivityTests(DatabaseTestCase):
         self.assertTrue(any('過去セッションからの参照情報' in call.args[0] and '設備担当' in call.args[0] for call in self.generate.call_args_list))
         self.assertEqual(self.request('GET', f'/sessions/{second}')['state'], result['state'])
         self.assertGreaterEqual(self.generate.call_count, 7)
+        events = [json.loads(record.getMessage().split("[interview] ", 1)[1]) for record in logs.records]
+        saved_memory = next(event for event in events if event["event"] == "memory_saved")
+        self.assertEqual(saved_memory["session_id"], first)
+        self.assertEqual(saved_memory["summary"], memory["recent_summaries"][0]["summary"])
+        self.assertEqual(saved_memory["nodes"][0]["text"], memory["nodes"][0]["text"])
+        turn = next(event for event in events if event["event"] == "turn_completed" and event["session_id"] == second)
+        self.assertEqual(turn["state"], result["state"])
+        self.assertTrue(turn["guide"]["guidance"])
+        self.assertEqual(turn["extracted"]["fram_input"], ["設備"])
+        reference = next(event for event in events if event["event"] == "memory_referenced")
+        self.assertEqual(reference["memory"]["summaries"][0]["summary"], saved_memory["summary"])
 
     def test_memory_context_survives_long_history(self):
         context = {'context': True, 'role': 'system', 'content': '【過去セッションからの参照情報】設備担当'}

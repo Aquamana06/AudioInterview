@@ -24,10 +24,12 @@ from api.settings import BACKEND_ROOT
 from db.database import initialize_database
 from llm.client import configured, model as llm_model, status as llm_status
 from llm.local_qwen import warmup as warmup_qwen
+from interview.diagnostics import configure_logging
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    configure_logging()
     initialize_database()
     ensure_admin()
     logger = logging.getLogger("uvicorn.error")

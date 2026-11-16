@@ -5,6 +5,7 @@ from typing import Any
 from config import load_config
 from db.database import database, new_id, now_iso
 from llm.client import complete_json, configured
+from interview.diagnostics import log_event, logger
 
 
 CONFIG = load_config("db")["memory"]
@@ -184,7 +185,9 @@ MEMORY_SCHEMA = {
 
 async def finalize_session(account_id: str, session_id: str, language: str, messages: list[dict]) -> None:
     if not configured():
+        log_event("memory_skipped", session_id, reason="LLM が未設定のため要約を生成しません。")
         return
+    log_event("memory_finalizing", session_id)
     memory = load_participant_memory(account_id)
     transcript = "\n".join(f"[{item['id']}] {item['role']}: {item['content']}" for item in messages)
     prompt = f"""次のインタビュー記録を、参加者の将来の会話で参照するために整理してください。書かれていない事実は作らず、profile_patchは新しく明示された情報だけにしてください。nodesは具体的な業務、状況、調整行動、理由、判断基準、価値観、経験源、個人的意味を含めます。edgesは明示された因果や関係だけにします。evidence_message_idsは根拠のメッセージIDを使います。
@@ -195,5 +198,9 @@ async def finalize_session(account_id: str, session_id: str, language: str, mess
     try:
         update = await complete_json(prompt, MEMORY_SCHEMA)
     except Exception:
+        logger.exception("[interview] session_id=%s 要約・記憶の生成に失敗しました", session_id)
         return
     save_session_memory(account_id, session_id, memory["profile"], update)
+    log_event("memory_saved", session_id, summary=update.get("summary", ""),
+              profile=_merge_profile(memory["profile"], update.get("profile_patch", {})),
+              nodes=update.get("nodes", []), edges=update.get("edges", []))

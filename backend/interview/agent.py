@@ -82,7 +82,7 @@ async def extract_turn(user_input: str, state: dict, history: list[dict]) -> dic
         return _fallback_extraction(user_input)
     prompt = f"""あなたは半構造化インタビューの情報抽出器です。直前のインタビュイ発話だけから、明示された情報を抽出してください。想像で補わず、同じ事実を複数項目に重複させず、相槌は情報なしとします。
 FRAMは input=作業のきっかけ/処理対象、precondition=実行前の条件、resource=資源、control=手順書/監督/計画、time=時間/制約、output=結果です。reasons は実践に明示的に結びつく理由だけ、values は業務上の判断基準、sources は考え方の形成源、personal_meanings は個人的経験と仕事観のつながりだけを記録してください。
-deep_dive_opportunity は直前発話の具体的な一部分に続く一問が作れる時だけ true にし、その根拠を短く deep_dive_anchor に記録します。wants_to_stop は明確な終了意思だけ true です。
+deep_dive_opportunity は直前の回答に関してxxのときだけ true にし、その根拠を短く deep_dive_anchor に記録します。wants_to_stop は明確な終了意思だけ true です。
 
 現在の state: {json.dumps(state, ensure_ascii=False)}
 対話履歴: {_history_text(history)}
@@ -197,7 +197,7 @@ async def run_interview_turn(state: dict, user_input: str, history: list[dict], 
     elif info.get("deep_dive_opportunity") and info.get("deep_dive_anchor"):
         guide = f"直前の具体的な話『{info['deep_dive_anchor']}』に続く一問をする。"
     elif next_state["task_coverage"] < CONFIG["ending"]["min_task_coverage"]:
-        guide = "業務の流れ・きっかけ・条件・資源・手順・時間・結果の不足を確認する。"
+        guide = "業務のきっかけ・条件・資源（知識や経験）・手順・時間制約(優先順位）・結果の観点でを確認する。"
     elif next_state["task_depth"] < CONFIG["ending"]["high_depth"]:
         guide = "具体的な実践や判断を一つ選び、理由や判断基準を一段掘り下げる。"
     elif next_state["irregular_coverage"] < CONFIG["guidance"]["irregular_coverage"]:

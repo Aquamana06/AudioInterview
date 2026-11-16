@@ -15,6 +15,7 @@ from api.auth import (
 from db.database import database, get_state, insert_message, list_messages, new_id, now_iso, public_message, row_dict, update_state
 from db.memory import finalize_session, load_participant_memory, select_relevant_memory
 from interview.agent import ENDINGS, initial_state, run_interview_turn
+from interview.diagnostics import log_event, log_turn, logger
 from interview.longitudinal import starter as longitudinal_starter
 from interview.profile_agent import run_profile_turn, starter as profile_starter
 from config import load_config
@@ -84,10 +85,12 @@ def _stagnation(session_id: str) -> int:
         return int(row[0]) if row else 0
 
 
-async def _run_turn(state: dict, content: str, history: list[dict], language: str, memory: dict, stalled: int = 0) -> dict:
+async def _run_turn(state: dict, content: str, history: list[dict], language: str, memory: dict, stalled: int = 0,
+                    *, session_id: str = "") -> dict:
     if memory["session_count"] == 0:
         return await run_profile_turn(state, content, history, language, memory["profile"])
     relevant = select_relevant_memory(memory, content)
+    log_event("memory_referenced", session_id, memory=relevant)
     # Keep memory available to the model as explicit context without treating it as a current answer.
     contextual_history = list(history)
     if relevant["nodes"] or relevant["summaries"] or relevant["profile"].get("role"):
@@ -99,6 +102,8 @@ async def _run_turn(state: dict, content: str, history: list[dict], language: st
                        "\n関連するときだけ前提として使い、過去の理由を今回も同じと決めつけないでください。",
         })
     if stalled >= load_config("interview")["guidance"]["stagnation_turns"]:
+        log_event("stagnation_guidance", session_id, depth_stagnation_count=stalled,
+                  guidance="これまでと異なる角度から一つ尋ね、同じ理由を聞き直さない。")
         contextual_history.insert(0, {
             "context": True,
             "role": "system",
@@ -122,7 +127,7 @@ async def _process_message(session: dict, body: dict, background_tasks: Backgrou
     memory = load_participant_memory(session["account_id"])
     stalled = _stagnation(session["id"])
     before_depth = state.get("task_depth", 0)
-    result = await _run_turn(state, content, history, session["language"], memory, stalled)
+    result = await _run_turn(state, content, history, session["language"], memory, stalled, session_id=session["id"])
     next_stalled = stalled + 1 if result["state"].get("task_depth", 0) == before_depth else 0
     _update_stagnation(session["id"], next_stalled)
     with database() as connection:
@@ -139,6 +144,7 @@ async def _process_message(session: dict, body: dict, background_tasks: Backgrou
             )
         else:
             connection.execute("UPDATE interview_sessions SET updated_at=? WHERE id=?", (stamp, session["id"]))
+    log_turn(session["id"], result, depth_stagnation_count=next_stalled)
     if result["stateLabel"] == "end":
         background_tasks.add_task(_finalize_session_safe, session)
     updated = {**session, "status": "ended" if result["stateLabel"] == "end" else session["status"]}
@@ -151,8 +157,7 @@ async def _finalize_session_safe(session: dict) -> None:
             messages = list_messages(connection, session["id"])
         await finalize_session(session["account_id"], session["id"], session["language"], messages)
     except Exception:
-        import logging
-        logging.getLogger(__name__).exception("Failed to finalize session memory")
+        logger.exception("[interview] session_id=%s Failed to finalize session memory", session["id"])
 
 
 async def _replay_after_edit(session: dict, message_id: str, content: str) -> dict:
@@ -175,12 +180,13 @@ async def _replay_after_edit(session: dict, message_id: str, content: str) -> di
         with database() as connection:
             insert_message(connection, session["id"], "user", turn["content"], turn["input_mode"], session["language"])
             history = list_messages(connection, session["id"])
-        result = await _run_turn(state, turn["content"], history, session["language"], memory)
+        result = await _run_turn(state, turn["content"], history, session["language"], memory, session_id=session["id"])
         state = result["state"]
         with database() as connection:
             insert_message(connection, session["id"], "system", result["text"], "system", session["language"], {
                 "extracted": result.get("extracted"), "guide": result.get("guide"), "stateSnapshot": state,
             })
+        log_turn(session["id"], result, replay=True)
     with database() as connection:
         update_state(connection, session["id"], state, "running")
         connection.execute(
@@ -299,6 +305,9 @@ async def start_session(session_id: str, account: dict = Depends(require_account
                             {"stateSnapshot": initial_state()})
             update_state(connection, session_id, initial_state(), "running")
         _update_stagnation(session_id, 0)
+        log_event("session_started", session_id,
+                  mode="profile" if memory["session_count"] == 0 else "interview",
+                  state=initial_state(), memory=memory, opening=opening)
     return _session_payload(session)
 
 
@@ -327,6 +336,8 @@ async def end_session(session_id: str, background_tasks: BackgroundTasks,
                 (stamp, stamp, session_id),
             )
         background_tasks.add_task(_finalize_session_safe, session)
+        log_event("session_ended", session_id, reason="manual",
+                  state=saved["state"] if saved else initial_state())
     return _session_payload({**session, "status": "ended", "ended_at": now_iso()})
 
 

@@ -8,6 +8,75 @@ from interview.profile_agent import run_profile_turn
 
 
 class InterviewTests(unittest.TestCase):
+    def run_dive_turn(self, state, text, **extracted):
+        info = {**empty_extraction(), **extracted}
+        with patch("interview.agent.extract_turn", AsyncMock(return_value=info)), \
+             patch("interview.agent.configured", return_value=False):
+            return asyncio.run(run_interview_turn(state, text, [], "ja"))
+
+    def test_dive_clarifies_then_asks_reason_then_returns_to_original_work(self):
+        state = initial_state()
+        state["target_work"] = "設備点検"
+        first = self.run_dive_turn(state, "他のタスクの方が優先だから", deep_dive_opportunity=True,
+                                   deep_dive_anchor="他のタスクの方が優先", deep_dive_needs_clarification=True)
+        self.assertEqual(first["state"]["deep_dive"]["stage"], "clarify")
+        self.assertIn("具体的には", first["text"])
+        second = self.run_dive_turn(first["state"], "故障対応です", target_work="故障対応")
+        self.assertEqual(second["state"]["deep_dive"]["stage"], "reason")
+        self.assertEqual(second["state"]["target_work"], "設備点検")
+        self.assertNotIn("対象業務: 故障対応", second["state"]["known_facts"])
+        self.assertIn("理由", second["text"])
+        self.assertIn("他のタスクの方が優先", second["text"])
+        third = self.run_dive_turn(second["state"], "ラインが止まるためです", reasons=["ラインが止まるため"],
+                                  deep_dive_opportunity=True, deep_dive_anchor="ラインが止まる")
+        self.assertIsNone(third["state"]["deep_dive"])
+        self.assertIn("元の対象業務『設備点検』", third["guide"]["guidance"])
+        self.assertIn("理由: ラインが止まるため", third["state"]["known_facts"])
+
+    def test_dive_skips_clarification_when_subject_is_clear(self):
+        result = self.run_dive_turn(initial_state(), "点検より故障対応を優先します", deep_dive_opportunity=True,
+                                    deep_dive_anchor="点検より故障対応を優先")
+        self.assertEqual(result["state"]["deep_dive"]["stage"], "reason")
+        self.assertIn("理由", result["text"])
+
+    def test_reason_volunteered_during_clarification_is_not_asked_again(self):
+        first = self.run_dive_turn(initial_state(), "他のタスクが優先", deep_dive_opportunity=True,
+                                   deep_dive_anchor="他のタスクが優先", deep_dive_needs_clarification=True)
+        result = self.run_dive_turn(first["state"], "ラインが止まるので故障対応です",
+                                   deep_dive_reason_answered=True, reasons=["ラインが止まるので"])
+        self.assertIsNone(result["state"]["deep_dive"])
+        self.assertIn("同じ理由を聞き直したり", result["guide"]["guidance"])
+
+    def test_dive_stops_after_one_reason_question_even_without_reason(self):
+        first = self.run_dive_turn(initial_state(), "故障対応が優先", deep_dive_opportunity=True,
+                                   deep_dive_anchor="故障対応が優先")
+        result = self.run_dive_turn(first["state"], "いつもそうしています")
+        self.assertIsNone(result["state"]["deep_dive"])
+        self.assertIn("深掘りはここで終え", result["guide"]["guidance"])
+
+    def test_resistance_and_stop_cancel_active_dive(self):
+        for info in ({"signs_of_resistance": ["答えたくない"]}, {"wants_to_stop": True}):
+            with self.subTest(info=info):
+                first = self.run_dive_turn(initial_state(), "故障対応が優先", deep_dive_opportunity=True,
+                                           deep_dive_anchor="故障対応が優先")
+                result = self.run_dive_turn(first["state"], "終了", **info)
+                self.assertIsNone(result["state"]["deep_dive"])
+                if info.get("wants_to_stop"):
+                    self.assertEqual(result["stateLabel"], "end")
+                else:
+                    self.assertIn("圧を下げて", result["guide"]["guidance"])
+
+    def test_automatic_end_waits_for_pending_reason_answer(self):
+        state = initial_state()
+        state.update(target_work="設備点検", practice_covered=True, high_depth_turn_count=2)
+        state["task_coverage_by_fram"] = {key: 0.1 for key in state["task_coverage_by_fram"]}
+        first = self.run_dive_turn(state, "故障対応が優先", deep_dive_opportunity=True,
+                                   deep_dive_anchor="故障対応が優先")
+        self.assertEqual(first["stateLabel"], "running")
+        second = self.run_dive_turn(first["state"], "ラインが止まるからです", reasons=["ラインが止まるから"])
+        self.assertEqual(second["stateLabel"], "end")
+        self.assertIsNone(second["state"]["deep_dive"])
+
     def test_separate_sessions_do_not_share_mutable_state(self):
         first, second = initial_state(), initial_state()
         first["known_facts"].append("事実")

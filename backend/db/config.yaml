@@ -6,3 +6,5 @@ memory:
   nodes: 80
   edges: 120
   prompt_summaries: 3
+  fallback_answers: 12
+  fallback_answer_chars: 160

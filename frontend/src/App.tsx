@@ -164,6 +164,7 @@ function Interview({ sessionId, onSessionsChanged, onExit }: { sessionId: string
   const initialSpeechStartedRef = useRef(false)
   const speechGenerationRef = useRef(0)
   const busyRef = useRef(false)
+  const completedHereRef = useRef(false)
   const overDetectorRef = useRef<{
     context: AudioContext
     source: MediaStreamAudioSourceNode
@@ -191,9 +192,21 @@ function Interview({ sessionId, onSessionsChanged, onExit }: { sessionId: string
   }, [])
 
   const load = useCallback(async () => {
-    const data = await api<SessionPayload>(`/api/sessions/${sessionId}`); setPayload(data)
+    try {
+      setError('')
+      const data = await api<SessionPayload>(`/api/sessions/${sessionId}`); setPayload(data)
+    } catch (caught) { setError(caught instanceof Error ? caught.message : 'セッションを読み込めませんでした') }
   }, [sessionId])
   useEffect(() => { void load() }, [load])
+  useEffect(() => {
+    if (payload?.session.status !== 'ended') return
+    switchToTextInput()
+    setStreamingMessageId(null)
+    setSpeechState('ended')
+    if (!completedHereRef.current) return
+    const timer = window.setTimeout(onExit, 2400)
+    return () => window.clearTimeout(timer)
+  }, [payload?.session.status, onExit])
   useEffect(() => {
     if (!payload || initialSpeechStartedRef.current || payload.session.status === 'ended') return
     const opening = payload.messages.length === 1 && payload.messages[0].role === 'system' ? payload.messages[0] : null
@@ -224,6 +237,8 @@ function Interview({ sessionId, onSessionsChanged, onExit }: { sessionId: string
   }, [streamingMessageId, payload, speak])
   useEffect(() => () => {
     handsFreeRef.current = false
+    speechGenerationRef.current += 1
+    globalThis.speechSynthesis?.cancel()
     voiceGenerationRef.current += 1
     transcriptionSequenceRef.current += 1
     stopOverDetector()
@@ -382,7 +397,7 @@ function Interview({ sessionId, onSessionsChanged, onExit }: { sessionId: string
   function switchToTextInput() {
     handsFreeRef.current = false; setHandsFree(false)
     speechGenerationRef.current += 1
-    speechSynthesis.cancel()
+    globalThis.speechSynthesis?.cancel()
     pendingSpeechRef.current = null
     voiceGenerationRef.current += 1
     transcriptionSequenceRef.current += 1
@@ -410,13 +425,14 @@ function Interview({ sessionId, onSessionsChanged, onExit }: { sessionId: string
         ? { maskedText: preparedMaskedText }
         : await api<{ normalizedText: string; maskedText: string }>('/api/local/mask-text', jsonInit('POST', { text: content }))
       const result = await api<SessionPayload>(`/api/sessions/${payload.session.id}/messages`, jsonInit('POST', { maskedText: prepared.maskedText, inputMode, editMessageId: editingId || undefined }))
+      if (result.session.status === 'ended') completedHereRef.current = true
       const newUser = result.messages.find(message => message.role === 'user' && !beforeIds.has(message.id))
       if (newUser && displayText) setDisplayOverrides(current => ({ ...current, [newUser.id]: displayText }))
       setPayload(result); setText(''); setEditingId(null); onSessionsChanged()
       const assistant = [...result.messages].reverse().find(message => message.role === 'system')
-      if (assistant) {
+      if (assistant && result.session.status !== 'ended') {
         setDisplayOverrides(current => ({ ...current, [assistant.id]: '' }))
-        pendingSpeechRef.current = handsFreeRef.current && result.session.status !== 'ended'
+        pendingSpeechRef.current = handsFreeRef.current
           ? { content: assistant.content, language: result.session.language }
           : null
         setStreamingMessageId(assistant.id)
@@ -431,18 +447,28 @@ function Interview({ sessionId, onSessionsChanged, onExit }: { sessionId: string
   }
 
   async function endInterview() {
-    if (!payload || !confirm('このインタビューを終了しますか？')) return
-    const result = await api<SessionPayload>(`/api/sessions/${payload.session.id}/end`, { method: 'POST' }); setPayload(result); setSpeechState('ended'); onSessionsChanged(); window.setTimeout(onExit, 2400)
+    if (!payload || busyRef.current || !confirm('このインタビューを終了しますか？')) return
+    busyRef.current = true; setIsBusy(true); setError('')
+    try {
+      const result = await api<SessionPayload>(`/api/sessions/${payload.session.id}/end`, { method: 'POST' })
+      completedHereRef.current = true
+      setPayload(result); onSessionsChanged()
+    } catch (caught) { setError(caught instanceof Error ? caught.message : '終了処理に失敗しました') }
+    finally { busyRef.current = false; setIsBusy(false) }
   }
 
-  if (!payload) return <div className="loading">セッションを読み込んでいます…</div>
+  if (!payload) return <div className="loading">{error ? <>
+    <p role="alert">{error}</p>
+    <button onClick={() => void load()}>再試行</button>
+    <button onClick={onExit}>ホームに戻る</button>
+  </> : 'セッションを読み込んでいます…'}</div>
   const latestQuestion = [...payload.messages].reverse().find(message => message.role === 'system')
   const isThinking = speechState === 'thinking' && !streamingMessageId
   const interviewerIsActive = speechState === 'speaking' || isThinking || Boolean(streamingMessageId)
   const userIsActive = speechState === 'recording' || speechState === 'transcribing'
   return <section className={`interview-layout ${interviewerIsActive ? 'interviewer-active' : ''} ${userIsActive ? 'user-active' : ''}`}>
     <div className="interview-scene alpaca-background" style={{ backgroundImage: `url(${alpacaBackground})` }} aria-hidden="true"><div className="scene-shade" /></div>
-    <header className="interview-header"><div className={`speech-status ${speechState}`}><i />{isThinking ? 'インタビュアーが考え中…' : labels[speechState]}</div><button className="danger-outline" onClick={endInterview} disabled={payload.session.status === 'ended'}>終了</button></header>
+    <header className="interview-header"><div className={`speech-status ${speechState}`}><i />{isThinking ? 'インタビュアーが考え中…' : labels[speechState]}</div><button className="danger-outline" onClick={payload.session.status === 'ended' ? onExit : endInterview} disabled={payload.session.status !== 'ended' && isBusy}>{payload.session.status === 'ended' ? 'ホームに戻る' : '終了'}</button></header>
     <div className="interview-stage">
       <div className={`assistant-bubble ${isThinking ? 'thinking' : ''}`} aria-live="polite">
         <span>interviewer</span>
@@ -480,10 +506,11 @@ function App() {
       setSessions(result.sessions)
       if (!initialSessionResolved.current) {
         initialSessionResolved.current = true
-        if (result.sessions[0]) setSelectedId(result.sessions[0].id)
+        if (result.sessions[0]?.status === 'running') setSelectedId(result.sessions[0].id)
       }
     } catch { /* login handles auth */ }
   }, [])
+  const exitInterview = useCallback(() => { setSelectedId(null); setView('interview') }, [])
   useEffect(() => { api<{ account: Account }>('/api/me').then(result => { setAccount(result.account); setAuthChecked(true) }).catch(() => setAuthChecked(true)) }, [])
   useEffect(() => { if (account) void loadSessions() }, [account, loadSessions])
   useEffect(() => { if (account?.role === 'admin') setView('admin') }, [account])
@@ -501,7 +528,7 @@ function App() {
       <nav><p>セッション</p>{sessions.map(item => <button key={item.id} className={selectedId === item.id && view === 'interview' ? 'selected' : ''} onClick={() => { setSelectedId(item.id); setView('interview') }}><span>{item.title}</span><small>{languageLabels[item.language]} · {item.status}</small></button>)}</nav>
       <div className="sidebar-bottom"><div className="account-chip"><span className="avatar small">{account.displayName.slice(0, 1)}</span><div><strong>{account.displayName}</strong><small>{account.id}</small></div><button title="ログアウト" onClick={signOut}>↪</button></div></div>
     </aside>
-    <main className="workspace">{view === 'admin' ? <AdminPanel onOpenSession={id => { setSelectedId(id); setView('interview') }} /> : selectedId ? <Interview key={selectedId} sessionId={selectedId} onSessionsChanged={loadSessions} onExit={() => setSelectedId(null)} /> : <div className="empty-state"><div>✦</div><h2>インタビューを始めましょう</h2><p>言語を選び、「新しいインタビュー」を押してください。</p><button className="primary" onClick={createSession}>新しいインタビュー</button></div>}</main>
+    <main className="workspace">{view === 'admin' ? <AdminPanel onOpenSession={id => { setSelectedId(id); setView('interview') }} /> : selectedId ? <Interview key={selectedId} sessionId={selectedId} onSessionsChanged={loadSessions} onExit={exitInterview} /> : <div className="empty-state"><div>✦</div><h2>インタビューを始めましょう</h2><p>言語を選び、「新しいインタビュー」を押してください。</p><button className="primary" onClick={createSession}>新しいインタビュー</button></div>}</main>
   </div>
 }
 

@@ -21,7 +21,7 @@ def model_response(prompt, model_id):
         }, ensure_ascii=False)
     if '"position_or_seniority"' in prompt:
         return json.dumps({**{key: [] for key in PROFILE_FIELDS}, 'role': ['設備担当'], 'wants_to_stop': False}, ensure_ascii=False)
-    if '"target_work"' in prompt:
+    if '半構造化インタビューの情報抽出器' in prompt:
         return json.dumps({**empty_extraction(), 'target_work': '設備 点検', 'practices': ['温度を確認'],
                            'fram_input': ['設備'], 'reasons': ['安全のため']}, ensure_ascii=False)
     return '普段の設備点検について教えてください。'
@@ -54,13 +54,15 @@ class ConnectivityTests(DatabaseTestCase):
         self.assertEqual(result['state']['turn_count'], 1)
         self.assertIn('初回プロフィール/role: 設備担当', result['state']['persona_notes'])
         self.assertEqual(result['messages'][1]['inputMode'], 'voice')
-        self.request('POST', f'/sessions/{first}/end')
+        ended = self.request('POST', f'/sessions/{first}/end')
+        self.assertIsNotNone(ended['memory']['summary'])
+        self.assertEqual(self.request('GET', f'/sessions/{first}')['memory']['status'], 'ready')
         memory = load_participant_memory(issued['id'])
         self.assertEqual(memory['profile']['role'], '設備担当')
         self.assertEqual(memory['nodes'][0]['text'], '設備 点検')
         second = self.request('POST', '/sessions', json={'language': 'ja'})['session']['id']
         self.request('POST', f'/sessions/{second}/start')
-        result = self.request('POST', f'/sessions/{second}/messages', json={'maskedText': '設備', 'inputMode': 'text'})
+        result = self.request('POST', f'/sessions/{second}/messages', json={'maskedText': '設備の点検をしていました', 'inputMode': 'text'})
         self.assertEqual(result['state']['target_work'], '設備 点検')
         self.assertEqual(result['state']['task_depth'], 3)
         self.assertGreater(result['state']['task_coverage'], 0)

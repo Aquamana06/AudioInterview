@@ -3,7 +3,8 @@ from unittest.mock import AsyncMock, patch
 import unittest
 
 import backend_test_support  # Configure the import path and external inference boundary.
-from interview.agent import ENDINGS, empty_extraction, initial_state, run_interview_turn, should_end, update_state
+from backend_test_support import irregular_evidence
+from interview.agent import ENDINGS, FRAM_MEANINGS, empty_extraction, initial_state, run_interview_turn, should_end, update_state
 from interview.profile_agent import run_profile_turn
 
 
@@ -68,7 +69,8 @@ class InterviewTests(unittest.TestCase):
 
     def test_automatic_end_waits_for_pending_reason_answer(self):
         state = initial_state()
-        state.update(target_work="設備点検", practice_covered=True, high_depth_turn_count=2)
+        state.update(target_work="設備点検", practice_covered=True, task_depth=5, high_depth_turn_count=2,
+                     irregular_coverage=0.6, irregular_evidence=irregular_evidence())
         state["task_coverage_by_fram"] = {key: 0.1 for key in state["task_coverage_by_fram"]}
         first = self.run_dive_turn(state, "故障対応が優先", deep_dive_opportunity=True,
                                    deep_dive_anchor="故障対応が優先")
@@ -104,8 +106,252 @@ class InterviewTests(unittest.TestCase):
         update_state(state, info)
         self.assertEqual(state["task_depth"], 5)
         self.assertFalse(should_end(state))
-        state["task_coverage"] = 0.6
+        state["task_coverage"] = 0.44
+        self.assertFalse(should_end(state))
+        state["task_coverage"] = 0.45
+        self.assertFalse(should_end(state))
+        state["irregular_coverage"] = 0.25
+        self.assertFalse(should_end(state))
+        state["irregular_coverage"] = 0.59
+        self.assertFalse(should_end(state))
+        state["irregular_coverage"] = 0.6
         self.assertTrue(should_end(state))
+
+    def test_missing_precondition_is_asked_alone_when_returning_from_dive(self):
+        state = initial_state()
+        state["target_work"] = "ダスターの交換"
+        state["task_coverage_by_fram"] = {key: 0.05 for key in state["task_coverage_by_fram"]}
+        state["task_coverage_by_fram"]["precondition"] = 0
+        state["task_coverage_by_fram"]["output"] = 0
+        state["deep_dive"] = {"anchor": "次のシフトへの配慮", "stage": "reason",
+                              "return_target_work": "ダスターの交換"}
+        result = self.run_dive_turn(state, "次の人が作業しやすいようにしています")
+        self.assertEqual(result["guide"]["fram_focus"], "precondition")
+        self.assertEqual(result["text"], "ダスターの交換を始めるには、現場がどんな状態になっている必要がありますか？")
+        self.assertIsNone(result["state"]["deep_dive"])
+
+    def test_return_from_anchor_uses_coverage_threshold_and_preserves_depth_five_transition(self):
+        for depth in (3, 5):
+            with self.subTest(depth=depth):
+                state = initial_state()
+                state.update(target_work="ダスター交換", task_depth=depth)
+                state["task_coverage_by_fram"] = {"input": 0.05, "precondition": 0, "resource": 0.05,
+                                                  "control": 0.05, "time": 0.05, "output": 0.05}
+                state["deep_dive"] = {"anchor": "二組で回す", "stage": "reason", "return_target_work": "ダスター交換"}
+                result = self.run_dive_turn(state, "決まっているからです", reasons=["決まっているから"])
+                self.assertEqual(result["state"]["task_coverage"], 0.45)
+                self.assertNotIn("fram_focus", result["guide"])
+                self.assertIsNone(result["state"]["deep_dive"])
+                if depth < 5:
+                    self.assertIn("まだ得られていない段階", result["guide"]["guidance"])
+                    self.assertNotIn("現場がどんな状態", result["text"])
+                else:
+                    self.assertIn("予定どおりに進まない", result["guide"]["guidance"])
+
+    def test_legacy_no_information_flag_does_not_cancel_anchor_or_change_guidance(self):
+        state = initial_state()
+        state["target_work"] = "ダスター交換"
+        state["deep_dive"] = {"anchor": "二組で回す", "stage": "clarify", "return_target_work": "ダスター交換"}
+        result = self.run_dive_turn(state, "決まりだから", signs_of_no_information=["決まりだから"])
+        self.assertEqual(result["state"]["deep_dive"]["stage"], "reason")
+        self.assertNotIn("圧を下げて", result["guide"]["guidance"])
+        self.assertNotIn("決まりだから", result["state"]["asked_points"])
+
+    def test_friction_apologizes_and_continues_coverage_depth_or_anchor_questions(self):
+        for stage in ("coverage", "depth", "anchor"):
+            with self.subTest(stage=stage):
+                state = initial_state()
+                state["target_work"] = "ダスター交換"
+                if stage == "depth":
+                    state["task_coverage_by_fram"] = {key: 0.1 for key in state["task_coverage_by_fram"]}
+                    state["task_depth"] = 3
+                if stage == "anchor":
+                    state["deep_dive"] = {"anchor": "二組で回す", "stage": "clarify", "return_target_work": "ダスター交換"}
+                result = self.run_dive_turn(state, "そういう意味ではないです", signs_of_friction=["聞き手の誤解"])
+                self.assertIn("質問を一つ続ける", result["guide"]["guidance"])
+                self.assertNotIn("質問しない", result["guide"]["guidance"])
+                self.assertTrue(result["text"].startswith("失礼しました。"))
+                self.assertIn("？", result["text"])
+                if stage == "coverage":
+                    self.assertIn("fram_focus", result["guide"])
+                elif stage == "depth":
+                    self.assertIn("まだ得られていない段階", result["guide"]["guidance"])
+                else:
+                    self.assertEqual(result["state"]["deep_dive"]["stage"], "reason")
+
+    def test_coverage_question_targets_missing_fram_even_if_generation_fails(self):
+        for language in ("ja", "en", "de"):
+            with self.subTest(language=language):
+                state = initial_state()
+                state["target_work"] = "ダスター交換"
+                state["task_coverage_by_fram"] = {key: 0.05 for key in state["task_coverage_by_fram"]}
+                state["task_coverage_by_fram"]["precondition"] = 0
+                state["task_coverage_by_fram"]["output"] = 0
+                with patch("interview.agent.extract_turn", AsyncMock(return_value=empty_extraction())), \
+                     patch("interview.agent.configured", return_value=True), \
+                     patch("interview.agent.complete", AsyncMock(side_effect=RuntimeError("unavailable"))):
+                    result = asyncio.run(run_interview_turn(state, "はい", [], language))
+                self.assertEqual(result["guide"]["fram_focus"], "precondition")
+                self.assertIn("ダスター交換", result["text"])
+                self.assertEqual(result["text"].count("?") + result["text"].count("？"), 1)
+
+    def test_selected_input_meaning_and_guidance_follow_the_recent_material_conversation(self):
+        state = initial_state()
+        state.update(target_work="ドリンク作り", task_depth=1)
+        state["task_coverage_by_fram"] = {"input": 0, "precondition": 0.05, "resource": 0.1,
+                                          "control": 0, "time": 0, "output": 0.05}
+        state["known_facts"] = ["FRAM resource: ミルク", "FRAM output: 100杯くらい作った"]
+        history = [{"role": "system", "content": "他にどんな材料を使いましたか。"},
+                   {"role": "user", "content": "ミルク以外は特にありません"}]
+        response = "混雑時の注文は、どこで受け取っていましたか。"
+        with patch("interview.agent.configured", return_value=True), \
+             patch("interview.agent.complete", AsyncMock(return_value=response)) as generate:
+            result = asyncio.run(run_interview_turn(state, history[-1]["content"], history, "ja",
+                                                   extracted=empty_extraction()))
+        prompt = generate.call_args.args[0]
+        self.assertEqual(result["guide"]["fram_focus"], "input")
+        self.assertEqual(result["state"]["task_coverage_by_fram"]["resource"], 0.1)
+        self.assertIn(f"input = {FRAM_MEANINGS['input']}", prompt)
+        self.assertGreater(prompt.index("今の方針:"), prompt.rindex("直前の回答:"))
+        self.assertGreater(prompt.index("今回尋ねるFRAM項目:"), prompt.rindex("ミルク以外は特にありません"))
+        self.assertIn(f"今回の質問: {response}", result["state"]["asked_points"])
+
+    def test_japanese_questions_without_question_marks_are_recorded_but_reflections_are_not(self):
+        for response, expected in (
+            ("注文はどこで受け取っていましたか。", True),
+            ("注文はどこで受け取っていましたか", True),
+            ("注文の受け取り方を教えてください。", True),
+            ("注文がたくさん入っていたのですね。", False),
+            ("大変な状況だったのですね。", False),
+        ):
+            with self.subTest(response=response):
+                state = initial_state()
+                state["target_work"] = "ドリンク作り"
+                with patch("interview.agent.configured", return_value=True), \
+                     patch("interview.agent.complete", AsyncMock(return_value=response)):
+                    result = asyncio.run(run_interview_turn(state, "回答", [], "ja", extracted=empty_extraction()))
+                self.assertEqual(bool(result["state"]["asked_points"]), expected)
+                self.assertEqual(result["state"]["consecutive_questions"], int(expected))
+                self.assertEqual(result["state"]["turns_since_reflection"], int(expected))
+                self.assertEqual(result["state"]["rapport"] > 0, not expected)
+
+    def test_missing_resource_keeps_broad_resource_scope_when_generation_is_unavailable(self):
+        for language in ("ja", "en", "de"):
+            with self.subTest(language=language):
+                state = initial_state()
+                state["target_work"] = "ダスター交換"
+                state["task_coverage_by_fram"] = {key: 0.05 for key in state["task_coverage_by_fram"]}
+                state["task_coverage_by_fram"]["resource"] = 0
+                state["task_coverage_by_fram"]["output"] = 0
+                with patch("interview.agent.configured", return_value=False):
+                    result = asyncio.run(run_interview_turn(state, "回答", [], language, extracted=empty_extraction()))
+                self.assertEqual(result["guide"]["fram_focus"], "resource")
+                self.assertIn(FRAM_MEANINGS["resource"], result["guide"]["guidance"])
+                self.assertIn("ダスター交換", result["text"])
+                self.assertEqual(result["text"].count("?") + result["text"].count("？"), 1)
+
+    def test_reported_state_asks_about_irregular_cases_before_ending(self):
+        state = initial_state()
+        state.update(target_work="ダスターの交換", practice_covered=True, task_depth=5, high_depth_turn_count=6)
+        state["task_coverage_by_fram"] = {"input": 0.05, "precondition": 0, "resource": 0.05,
+                                          "control": 0.1, "time": 0.05, "output": 0.1}
+        result = self.run_dive_turn(state, "そうですね")
+        self.assertEqual(result["state"]["task_coverage"], 0.55)
+        self.assertEqual(result["stateLabel"], "running")
+        self.assertEqual(result["state"]["irregular_coverage"], 0)
+        self.assertIn("予定どおりに進まない", result["guide"]["guidance"])
+        self.assertIn("？", result["text"])
+        followup = self.run_dive_turn(result["state"], "交換用がなければ洗浄を先に行います",
+                                      irregular_responses=["交換用がなければ洗浄を先に行う"])
+        self.assertEqual(followup["state"]["irregular_coverage"], 0.2)
+        self.assertEqual(followup["stateLabel"], "running")
+        more_situations = self.run_dive_turn(followup["state"], "次の組の洗浄が終わっていない時です",
+                                             irregular_situations=["次の組の洗浄が終わっていない"])
+        self.assertEqual(more_situations["state"]["irregular_coverage"], 0.2)
+        reasons = self.run_dive_turn(more_situations["state"], "清潔なものがないと安全に作業できないからです",
+                                     irregular_reasons=["清潔なものがないと安全に作業できない"])
+        self.assertEqual(reasons["state"]["irregular_coverage"], 0.4)
+        self.assertEqual(reasons["stateLabel"], "running")
+        final = self.run_dive_turn(reasons["state"], "過去の経験からお客さんの信頼を守りたいからです",
+                                   irregular_deeper_reasons=["過去の経験からお客さんの信頼を守りたい"])
+        self.assertEqual(final["state"]["irregular_coverage"], 0.6)
+        self.assertEqual(final["stateLabel"], "end")
+
+    def test_missing_irregular_information_takes_priority_over_a_new_anchor(self):
+        state = initial_state()
+        state.update(target_work="ダスター交換", practice_covered=True, task_depth=5, high_depth_turn_count=2)
+        state["task_coverage_by_fram"] = {key: 0.1 for key in state["task_coverage_by_fram"]}
+        result = self.run_dive_turn(state, "チームワークを大切にしています", deep_dive_opportunity=True,
+                                    deep_dive_anchor="チームワークを大切にする")
+        self.assertIsNone(result["state"]["deep_dive"])
+        self.assertEqual(result["stateLabel"], "running")
+        self.assertIn("予定どおりに進まない", result["guide"]["guidance"])
+
+    def test_asking_about_irregular_cases_alone_does_not_satisfy_the_end_condition(self):
+        state = initial_state()
+        state.update(target_work="ダスター交換", practice_covered=True, task_depth=5, high_depth_turn_count=2)
+        state["task_coverage_by_fram"] = {key: 0.1 for key in state["task_coverage_by_fram"]}
+        for _ in range(2):
+            result = self.run_dive_turn(state, "普段どおりです")
+            state = result["state"]
+            self.assertEqual(result["stateLabel"], "running")
+            self.assertEqual(state["irregular_coverage"], 0)
+        result = self.run_dive_turn(state, "終了します", wants_to_stop=True)
+        self.assertEqual(result["stateLabel"], "end")
+
+    def test_user_question_is_answered_before_ending_at_or_above_irregular_threshold(self):
+        for level in range(4):
+            coverage = round(level * 0.2, 2)
+            with self.subTest(irregular_coverage=coverage):
+                state = initial_state()
+                state.update(target_work="レジ業務", practice_covered=True, task_depth=5,
+                             high_depth_turn_count=3, irregular_coverage=coverage,
+                             irregular_evidence=irregular_evidence(level))
+                state["task_coverage_by_fram"] = {key: 0.1 for key in state["task_coverage_by_fram"]}
+                question = "あえてっていうのはどういうことなんだ？"
+                info = {**empty_extraction(), "user_questions": [question],
+                        "signs_of_friction": ["聞き方の意図を確認"]}
+                answer = "分かりにくい言い方で失礼しました。普段の対応を選びにくい場合を想定していました。"
+                with patch("interview.agent.configured", return_value=True), \
+                     patch("interview.agent.complete", AsyncMock(return_value=answer)) as generate:
+                    result = asyncio.run(run_interview_turn(state, question, [], "ja", extracted=info))
+                generate.assert_awaited_once()
+                self.assertIn("相手の質問に短く答え", result["guide"]["guidance"])
+                self.assertEqual(result["text"], answer)
+                self.assertEqual(result["stateLabel"], "running")
+                self.assertEqual(result["state"]["irregular_coverage"], coverage)
+                self.assertNotIn("should_end", result["guide"])
+                following = self.run_dive_turn(result["state"], "わかりました")
+                self.assertEqual(following["stateLabel"], "end" if coverage >= 0.6 else "running")
+
+    def test_user_question_defers_ending_when_same_answer_reaches_irregular_threshold(self):
+        state = initial_state()
+        state.update(target_work="レジ業務", practice_covered=True, task_depth=5,
+                     high_depth_turn_count=3, irregular_coverage=0.4, irregular_evidence=irregular_evidence(2))
+        state["task_coverage_by_fram"] = {key: 0.1 for key in state["task_coverage_by_fram"]}
+        result = self.run_dive_turn(state, "過去の経験から信頼を大切にしています。あえてってどういう意味ですか？",
+                                   irregular_deeper_reasons=["過去の経験から信頼を大切にする"], user_questions=["あえてとは？"])
+        self.assertEqual(result["state"]["irregular_coverage"], 0.6)
+        self.assertEqual(result["stateLabel"], "running")
+        self.assertIn("相手の質問に短く答え", result["guide"]["guidance"])
+
+    def test_explicit_stop_still_takes_priority_over_a_user_question(self):
+        result = self.run_dive_turn(initial_state(), "その質問の意味は何ですか？ でももう終了してください。",
+                                   user_questions=["その質問の意味は何ですか？"], wants_to_stop=True)
+        self.assertEqual(result["stateLabel"], "end")
+        self.assertEqual(result["text"], ENDINGS["ja"])
+
+    def test_pending_anchor_finishes_before_the_required_irregular_question(self):
+        state = initial_state()
+        state.update(target_work="ダスター交換", practice_covered=True, task_depth=5, high_depth_turn_count=2)
+        state["task_coverage_by_fram"] = {key: 0.1 for key in state["task_coverage_by_fram"]}
+        state["deep_dive"] = {"anchor": "二組で回す", "stage": "clarify", "return_target_work": "ダスター交換"}
+        first = self.run_dive_turn(state, "交換用と洗浄用の二組です")
+        self.assertEqual(first["state"]["deep_dive"]["stage"], "reason")
+        second = self.run_dive_turn(first["state"], "作業が止まらないようにするためです")
+        self.assertIsNone(second["state"]["deep_dive"])
+        self.assertEqual(second["stateLabel"], "running")
+        self.assertIn("予定どおりに進まない", second["guide"]["guidance"])
 
     def test_stop_request_returns_localized_ending_without_generation(self):
         info = {**empty_extraction(), "wants_to_stop": True}

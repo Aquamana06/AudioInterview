@@ -59,3 +59,13 @@ class DatabaseTestCase(unittest.TestCase):
                 (session_id, account_id, "Test interview"),
             )
         return session_id
+
+
+def irregular_evidence(level=3):
+    """Evidence fixture for an exception, its direct reason, and its deeper background."""
+    return {
+        "irregular_situations": ["会計中にレジが停止した"] if level >= 1 else [],
+        "irregular_responses": ["レジ停止時は責任者に対応を依頼する"] if level >= 1 else [],
+        "irregular_reasons": ["誤った会計でお客さんに不利益を与えないため"] if level >= 2 else [],
+        "irregular_deeper_reasons": ["過去の誤会計の経験から、お客さんとの信頼を守ることを重視する"] if level >= 3 else [],
+    }

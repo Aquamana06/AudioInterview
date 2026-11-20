@@ -9,7 +9,7 @@ import uvicorn
 from api.settings import setting
 from config import load_config
 
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 import logging
 
 from fastapi import FastAPI, HTTPException, Request
@@ -22,6 +22,7 @@ from api.auth import ensure_admin
 from api import routes
 from api.settings import BACKEND_ROOT
 from db.database import initialize_database
+from db.memory import recover_session_memories
 from llm.client import configured, model as llm_model, status as llm_status
 from llm.local_qwen import warmup as warmup_qwen
 from interview.diagnostics import configure_logging
@@ -40,7 +41,13 @@ async def lifespan(_: FastAPI):
     logger.info("Warming Whisper: %s", routes.local_whisper.model_name)
     await asyncio.to_thread(routes.local_whisper.warmup)
     logger.info("Models ready; startup warmup took %.1fs", time.monotonic() - started)
-    yield
+    recovery = asyncio.create_task(recover_session_memories())
+    try:
+        yield
+    finally:
+        recovery.cancel()
+        with suppress(asyncio.CancelledError):
+            await recovery
 
 
 app = FastAPI(title="AudioInterview API", lifespan=lifespan)

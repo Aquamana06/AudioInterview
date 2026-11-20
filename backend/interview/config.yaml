@@ -11,17 +11,20 @@ profile:
   min_turns: 5
   min_covered_fields: 5
 ending:
-  min_task_coverage: 0.6
+  min_task_coverage: 0.45
+  min_irregular_coverage: 0.6
   high_depth: 5
   high_depth_turns: 2
   complete_task_coverage: 1.0
   complete_depth: 6
-  complete_irregular_coverage: 1.0
+  complete_irregular_coverage: 0.6
 guidance:
   stagnation_turns: 4
-  fallback_task_coverage: 0.7
-  irregular_coverage: 0.7
 retrieval:
+  task_sessions: 3
+  message_chars: 180
+  summary_chars: 600
+  task_context_chars: 5000
   items: 12
   summaries: 6
   confidence_weight: 0.25
@@ -31,8 +34,7 @@ scoring:
   fram_cap: 0.1
   # 充足した FRAM 項目数ごとの加点。
   fram_bonuses: {4: 0.1, 5: 0.2, 6: 0.4}
-  irregular_situation_increment: 0.25
-  irregular_response_increment: 0.35
+  irregular_stage_increment: 0.2
   friction_penalty: 0.12
   resistance_penalty: 0.05
   information_rapport_increment: 0.03

@@ -31,7 +31,7 @@ class APITests(DatabaseTestCase):
         self.assertEqual(response.status_code, 201, response.text)
         return response.json()["session"]["id"]
 
-    async def generated_turn(self, state, user_input, history, language, known_profile):
+    async def generated_turn(self, state, user_input, history, language, known_profile, *, domain_knowledge=None):
         state = deepcopy(state)
         state["turn_count"] += 1
         return {"text": f"回答を受け取りました: {user_input}", "state": state,

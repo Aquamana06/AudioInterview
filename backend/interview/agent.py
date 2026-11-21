@@ -209,7 +209,7 @@ def update_state(state: dict, info: dict) -> dict:
     facts = state["known_facts"]
     depth = 0 if not state["target_work"] else 1
     for prefix, depth_level in (
-        ("業務上の実践:", 2), ("理由:", 3), ("源泉:", 4), ("価値観:", 5),
+        ("業務上の実践:", 2), ("必要だから，重要だから，手順だから，程度の理由:", 3), ("組織の方針，源泉:", 4), ("個人の思いや価値観:", 5),
         ("個人的意味・価値観の形成背景・真髄:", 6),
     ):
         if any(item.startswith(prefix) for item in facts):
@@ -430,7 +430,7 @@ async def run_interview_turn(state: dict, user_input: str, history: list[dict], 
                       "今回の話と過去の情報を踏まえ、文脈に合う観点を一つだけ尋ね、材料の種類や一覧は尋ねない。")
     elif next_state["task_depth"] < CONFIG["ending"]["high_depth"]:
         depth_question = True
-        guide = ("今回の対象業務について、それまでに語られた具体的な実践や判断を一つ選び、"
+        guide = ("今回の対象業務について、それまでに語られた具体的な実践や判断を一つ選び、その人の仕事の内容や役職など過去に得た情報をふまえて深い情報を引き出す"
                  "まだ得られていない段階へ一段掘り下げる。『決まっているから』『ルールだから』など手順の説明で止まっているなら、"
                  "その決まりがなぜ大事なのか、現場でどう守られているか、組織として何を大切にしているのかのうち一つを尋ねる。"
                  "方針やその必要性まで分かっているなら、それを本人が大切にする背景の経験や価値観、仕事や会社への想いを尋ねる。"

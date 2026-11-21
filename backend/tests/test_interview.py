@@ -372,10 +372,25 @@ class InterviewTests(unittest.TestCase):
         self.assertEqual(result["state"]["turn_count"], 1)
         self.assertIn("設備点検", result["text"])
 
+    def test_profile_interview_ends_at_seven_answers_when_information_is_available(self):
+        state = initial_state()
+        state["persona_notes"] = [
+            f"初回プロフィール/{field}: 回答済み"
+            for field in ("role", "experience", "responsibilities", "collaborators", "personally_important_topics")
+        ]
+        with patch("interview.profile_agent.configured", return_value=False):
+            for answer in range(1, 8):
+                result = asyncio.run(run_profile_turn(state, "回答", [], "ja", {}))
+                self.assertEqual(result["stateLabel"], "running" if answer < 7 else "end")
+                state = result["state"]
+
     def test_profile_interview_has_turn_limit(self):
         state = initial_state()
-        state["turn_count"] = 8
+        state["turn_count"] = 6
         with patch("interview.profile_agent.configured", return_value=False):
-            result = asyncio.run(run_profile_turn(state, "回答", [], "ja", {}))
+            for answer in range(7, 10):
+                result = asyncio.run(run_profile_turn(state, "回答", [], "ja", {}))
+                self.assertEqual(result["stateLabel"], "running" if answer < 9 else "end")
+                state = result["state"]
         self.assertEqual(result["stateLabel"], "end")
         self.assertEqual(result["state"]["turn_count"], 9)

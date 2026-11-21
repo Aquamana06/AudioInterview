@@ -31,7 +31,7 @@ async def starter(language: str, *, domain_knowledge: list[dict] | None = None) 
     if not configured():
         return OPENINGS[language]
     language_name = {"ja": "日本語", "en": "English", "de": "Deutsch"}[language]
-    prompt = f"初対面の参加者とのインタビューを始める、短く自然な発話を{language_name}で1〜2文生成してください。{INTERVIEWER_STANCE}\n{domain_knowledge_context(domain_knowledge)}\n安心して話せる雰囲気を作り、差し支えない範囲で現在の担当や立場を一つ尋ねます。発話だけを返してください。"
+    prompt = f"初対面の参加者と自己紹介のように話し始める、短く自然な発話を{language_name}で1〜2文生成してください。{INTERVIEWER_STANCE}\n{domain_knowledge_context(domain_knowledge)}\nこの初回面談は、その人の仕事の全体像を知り、安心して話せる関係を作るためのものです。まずは差し支えない範囲で、普段どんな仕事をしているかを一つだけ尋ねてください。役職・経験年数などを一度に並べて尋ねず、会話の入口を作ります。発話だけを返してください。"
     try:
         return (await complete(prompt)).strip() or OPENINGS[language]
     except Exception:
@@ -67,7 +67,12 @@ async def run_profile_turn(state: dict, user_input: str, history: list[dict], la
     prompt = f"""初回インタビューの親しみやすい聞き手として、{language_name}で次の発話を1〜2文作ってください。
 {INTERVIEWER_STANCE}
 {domain_knowledge_context(domain_knowledge)}
-回答を短く受け止め、まだ十分に分からない基本情報を一つだけ自然に尋ねます。質問票のように列挙せず、差し支えない範囲で話せるようにします。深い理由や価値観の追及はせず、既に聞いたことは尋ね直しません。
+目的は、自己紹介を通してその人の仕事の全体像と人柄を知り、安心して話せる関係を作ること（ラポール形成）です。
+会話の中で知りたいのは、役職や立場、今の仕事の経験年数、業務内容の概要、日頃担当している業務や責任の範囲、よく一緒に仕事をする関係者がどんな人たちか、など，仕事内容や1日の業務の流れ，どれくらいその仕事をしているのか，などの基本的なその人の仕事を把握するために必要なプロフィールです．一日の流れは普段の仕事を知るための話題として扱えます。
+この一覧は質問の台本ではありません。回答を短く自然に受け止め、その話に沿って、まだ分からない話題を一つだけ尋ねてください。回答から既に分かったことは聞き直さず、順番に項目を埋めるような聞き方や、一度に複数の質問を並べる聞き方は避けます。
+その理由や価値観の形成背景を追及せず、具体的な作業手順や判断の根拠も深掘りしません。
+話しづらそうな話題は追わず、別の話しやすい話題に移ってください。評価や大げさな称賛はせず、相手の言葉に合わせて関心を示します。
+面談はおおむね{CONFIG['min_turns']}往復を目安とし、長くても{CONFIG['max_turns']}往復までです。現在、本人から{state['turn_count']}回の回答を受けています。残りの会話で全項目を無理に聞き切ろうとせず、短い会話で大まかな人物像をつかんでください。この発話では質問を一つ返し、終了の挨拶や次回の約束はしません。
 分かっているプロフィール: {json.dumps(state['persona_notes'], ensure_ascii=False)}
 会話履歴: {_history_text(history)}
 直前の回答: {user_input}
@@ -81,5 +86,5 @@ async def run_profile_turn(state: dict, user_input: str, history: list[dict], la
     state["consecutive_questions"] = state.get("consecutive_questions", 0) + 1
     state["turns_since_reflection"] = state.get("turns_since_reflection", 0) + 1
     return {"text": text, "state": state, "stateLabel": "running",
-            "extracted": empty_extraction(), "guide": {"guidance": "初回のプロフィール形成を雑談的に進める。"},
+            "extracted": empty_extraction(), "guide": {"guidance": "自己紹介のように日々の仕事の全体像や役職，関係者などを聞き、ラポールを形成する。"},
             "profileExtraction": extracted}

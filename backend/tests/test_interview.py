@@ -98,6 +98,34 @@ class InterviewTests(unittest.TestCase):
         self.assertEqual(state["task_coverage"], 1)
         self.assertTrue(all(value == 0.1 for value in state["task_coverage_by_fram"].values()))
 
+    def test_fram_breadth_bonus_counts_categories_with_even_partial_coverage(self):
+        for count, score, expected in (
+            (0, 0.05, 0), (1, 0.05, 0.05),
+            (2, 0.05, 0.15), (2, 0.1, 0.25),
+            (3, 0.05, 0.25), (3, 0.1, 0.4),
+            (4, 0.05, 0.4), (4, 0.1, 0.6),
+            (5, 0.05, 0.45), (6, 0.05, 0.7), (6, 0.1, 1),
+        ):
+            with self.subTest(count=count, score=score):
+                state = initial_state()
+                for field in list(state["task_coverage_by_fram"])[:count]:
+                    state["task_coverage_by_fram"][field] = score
+                update_state(state, empty_extraction())
+                self.assertEqual(state["task_coverage"], expected)
+
+    def test_fram_breadth_bonus_is_not_added_again_on_each_turn(self):
+        state = initial_state()
+        info = {**empty_extraction(), "fram_input": ["依頼", "対象物"],
+                "fram_resource": ["計器"], "fram_output": ["点検完了"]}
+        update_state(state, info)
+        self.assertEqual(state["task_coverage"], 0.25)
+        for _ in range(3):
+            update_state(state, empty_extraction())
+            self.assertEqual(state["task_coverage"], 0.25)
+        for _ in range(3):
+            update_state(state, info)
+            self.assertEqual(state["task_coverage"], 0.4)
+
     def test_deep_answers_alone_do_not_end_without_work_coverage(self):
         state = initial_state()
         info = {**empty_extraction(), "target_work": "設備点検", "practices": ["温度を確認"],

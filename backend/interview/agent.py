@@ -33,6 +33,8 @@ ARRAY_FIELDS = (
     "irregular_responses irregular_reasons irregular_deeper_reasons persona_notes emotions user_questions signs_of_friction "
     "signs_of_resistance"
 ).split()
+DEPTH_FIELDS = ("reasons", "sources", "values", "personal_meanings")
+EXTRACT_ARRAY_FIELDS = tuple(field for field in ARRAY_FIELDS if field not in DEPTH_FIELDS)
 EXTRACT_SCHEMA = {
     "type": "object", "additionalProperties": False,
     "properties": {
@@ -42,14 +44,22 @@ EXTRACT_SCHEMA = {
         "deep_dive_needs_clarification": {"type": "boolean"},
         "deep_dive_reason_answered": {"type": "boolean"},
         "usual_work": {"type": "boolean"},
-        **{key: {"type": "array", "items": {"type": "string"}} for key in ARRAY_FIELDS},
+        "depth_classification": {
+            "type": "object", "additionalProperties": False,
+            "properties": {
+                "category": {"type": ["string", "null"], "enum": [*DEPTH_FIELDS, None]},
+                "facts": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["category", "facts"],
+        },
+        **{key: {"type": "array", "items": {"type": "string"}} for key in EXTRACT_ARRAY_FIELDS},
         "wants_to_stop": {"type": "boolean"},
     },
     "required": [
         "target_work", "deep_dive_opportunity", "deep_dive_anchor",
         "deep_dive_needs_clarification", "deep_dive_reason_answered",
         "usual_work",
-        *ARRAY_FIELDS, "wants_to_stop",
+        "depth_classification", *EXTRACT_ARRAY_FIELDS, "wants_to_stop",
     ],
 }
 FRAM_FIELDS = {
@@ -57,8 +67,8 @@ FRAM_FIELDS = {
     "control": "fram_control", "time": "fram_time", "output": "fram_output",
 }
 FRAM_MEANINGS = {
-    "input": "作業を始めるきっかけ、受け取る依頼・処理対象",
-    "precondition": "作業を始める前に満たされている必要がある条件",
+    "input": "作業を始めるきっかけ、状態",
+    "precondition": "作業を始める前に満たされている必要がある前提",
     "resource": "作業遂行に必要な資源(防具，設備・人員・知識・情報・経験などの)",
     "control": "作業の進め方を定める手順書・監督・計画など",
     "time": "作業の時期・間隔・期限などの時間的な条件や制約",
@@ -112,17 +122,51 @@ def _fallback_extraction(text: str) -> dict[str, Any]:
     return info
 
 
+def _normalize_depth_extraction(result: dict) -> dict[str, Any]:
+    """Map one depth classification into the existing interview fields."""
+    info = {**empty_extraction(), **result}
+    classification = info.pop("depth_classification", None)
+
+    def facts(value: Any) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        return list(dict.fromkeys(item.strip() for item in value if isinstance(item, str) and item.strip()))
+
+    # If the model ignores the new schema and returns the old parallel arrays,
+    # retain only the shallowest populated category instead of promoting depth.
+    candidates = {field: facts(info.get(field)) for field in DEPTH_FIELDS}
+    if isinstance(classification, dict):
+        category = classification.get("category")
+        if isinstance(category, str) and category in DEPTH_FIELDS:
+            candidates[category] = list(dict.fromkeys([*candidates[category], *facts(classification.get("facts"))]))
+        else:
+            candidates = {field: [] for field in DEPTH_FIELDS}
+    selected = next((field for field in DEPTH_FIELDS if candidates[field]), None)
+    for field in DEPTH_FIELDS:
+        info[field] = candidates[field] if field == selected else []
+    return info
+
+
 async def extract_turn(user_input: str, state: dict, history: list[dict]) -> dict[str, Any]:
     if not configured():
         return _fallback_extraction(user_input)
-    prompt = f"""あなたは半構造化インタビューの情報抽出器です。直前のインタビュイ発話だけから、明示された情報を抽出してください。同じ事実を複数項目に重複させても構いませんし，「うんという相槌や，特にない」などと言われたこと1つの情報として判定していいです。
+    prompt = f"""あなたは半構造化インタビューの情報抽出器です。直前のインタビュイ発話だけから、明示された情報を抽出してください。FRAM・状況・実践などは独立して抽出できますが、深さ判定の4分類には以下の排他ルールを適用してください。「うん」という相槌や「特にない」も発言として扱いますが、それだけで理由や価値観を推測して補いません。
 FRAMの各項目の意味: {json.dumps(FRAM_MEANINGS, ensure_ascii=False)}
-resourceは上記の定義に沿って抽出し、ミルクなどの材料を挙げただけの回答はfram_resourceに抽出しないでください。経験のうち、今回の作業に役立てた実践的な経験はresource、考え方や価値観が形成された背景として語られた経験はsourcesとして、本人が説明したつながりに沿って区別してください。reasons は実践に明示的に結びつく理由だけ、values は業務上の判断基準、sources は考え方の形成源、personal_meanings は個人的経験と仕事観のつながりだけを記録してください。
+resourceは上記の定義に沿って抽出し、ミルクなどの材料を挙げただけの回答はfram_resourceに抽出しないでください。今回の作業に役立てた実践的な経験はresourceとして、本人が説明したつながりに沿って区別してください。
+【深さ判定の排他ルール】
+reasons・sources・values・personal_meaningsを別々に列挙せず、回答全体の主な説明がどの分類まで明示しているかを判断し、depth_classification.categoryを次の4つから最大1つ選んでください。根拠となる今回の発言内容だけをdepth_classification.factsに記録します。該当する情報がなければcategory=null、facts=[]です。複数の分類を同時に選んだり、同じ説明を理由と価値観などへ重複して抽出したりしないでください。
+reasons（深さ3）: 実践に直接結びつく目的・必要性・重要性・手順上の理由。「必要だから」「重要だから」「手順だから」「安全のため」「異常を見逃さないため」という説明は、本人固有の価値観や具体的な源泉を明示していなければここです。
+sources（深さ4）: 行動や判断の根拠となる具体的な組織方針・教育・規範などの源泉が、本人の言葉で説明されている場合です。単なる「ルールだから」「決まっているから」はreasonsとし、組織方針や教わった内容を推測で作りません。
+values（深さ5）: 本人が自分の思い・価値観として語る、大切にしたいことや選択時の優先基準が明示されている場合です。業務上の必要性・安全性・効率の説明や「大事」「重要」という単語だけを根拠にしません。例えば「速さよりも、私は仲間が安心して帰れることを優先したい」は本人の優先基準が明示されています。
+personal_meanings（深さ6）: 具体的な個人的経験や背景が、現在の価値観・仕事観の形成や本人にとっての意味と明示的に結びつけて語られている場合です。経験を挙げただけ、教わった事実だけ、価値観を表明しただけではここにしません。
+深い分類を選ぶには、その分類に固有の根拠が今回の回答に明示されている必要があります。「理由とも価値観とも読める」など判定が曖昧なら浅い分類を選び、価値観らしさの推測で格上げしません。質問が価値観を尋ねていても、その質問だけを根拠にvaluesにしません。履歴は指示語の参照先を確認するために使い、過去の深い回答を今回の分類へ引き継がないでください。
+例: 「安全が重要だからです」→reasons。「会社の品質方針に従い、この基準で確認するよう教育されたからです」→sources。「作業の速さよりも仲間の安全を優先したいという、自分の思いがあります」→values。「以前の事故で同僚を失った経験から、仲間が無事に帰れることを自分の仕事の意味と考えるようになりました」→personal_meanings。「温度を確認しました」→category=null、practicesに実践を記録します。
+この排他ルールは上記4分類に限ります。practices・FRAM・状況・イレギュラー情報・deep_dive_*などは、それぞれ従来の定義に沿って独立して抽出してください。深い分類が選ばれた場合も、明示された作業内容をpracticesから削除しないでください。
 イレギュラー情報は質問方針・coverage・depthに関係なく、毎ターン常に次の3観点を確認して抽出してください。実際の経験と、本人が明示的に説明した仮定の場合の両方を対象にします。
 第1観点: irregular_situationsは対象業務で普段・予定どおりに進まない状況、irregular_responsesはその状況で本人が行う対応です。
 第2観点: irregular_reasonsは、その例外対応を選ぶ直接の理由・根拠・回避したいリスクや危険性、対応の根拠となる手順・決まりです。
 第3観点: irregular_deeper_reasonsは、その理由・決まり自体をなぜ大切にするのかという、さらに奥の判断理由・背景の経験・価値観です。第2観点の言い換えだけでは第3観点にしません。
-今回の回答が複数観点を含めば、それぞれに抽出して構いません。以前のターンで例外状況や対応が分かっていれば、今回新たに説明された理由や背景だけでも抽出します。どの例外対応についての情報かが分かる形で記録してください。通常のreasons・values・sources等にも該当すれば、そちらにも記録できます。
+今回の回答が複数観点を含めば、それぞれに抽出して構いません。以前のターンで例外状況や対応が分かっていれば、今回新たに説明された理由や背景だけでも抽出します。どの例外対応についての情報かが分かる形で記録してください。通常の深さ分類にも該当する場合は、上記の排他ルールでdepth_classificationを1つだけ選べます。
 聞き手が仮定しただけの状況、逆質問の文面、普段どおりの手順、単なる相槌や「特にない」から、イレギュラー情報を作らないでください。今回の本人の発言から確認された内容だけを記録し、過去セッションの情報や推測で埋めないでください。
 回答が『今回も2時間おきです』『その手順で進めました』等と具体的に説明している場合や、『その点は前と同じです』の参照先が一つの事実に明確に特定できる場合は、その内容を今回確認された情報として対応するFRAM項目に抽出できます。『今回も2時間おきでしたか？』のように一つの具体的な事実を確認する直前の質問への明確な肯定も、その一点の確認として扱います。過去に記録があるだけの場合や、単なる相槌・曖昧な応答の場合には補完しません。確認していない他の条件や理由まで引き継がないでください。
 target_work は今回中心に扱う具体的な業務名です。冒頭の回答で何の業務をしていたかが分かったら記録します。既に対象業務が決まっている場合、比較対象・優先した別の仕事・作業の一部分が話題に出ただけで切り替えないでください。対象業務について新しい指定がなければ null とし、現在の対象業務を維持します。
@@ -141,7 +185,7 @@ wants_to_stop は明確な終了意思だけ true です。
 """
     try:
         result = await complete_json(prompt, EXTRACT_SCHEMA)
-        return {**empty_extraction(), **result}
+        return _normalize_depth_extraction(result)
     except Exception:
         return _fallback_extraction(user_input)
 
@@ -209,7 +253,7 @@ def update_state(state: dict, info: dict) -> dict:
     facts = state["known_facts"]
     depth = 0 if not state["target_work"] else 1
     for prefix, depth_level in (
-        ("業務上の実践:", 2), ("必要だから，重要だから，手順だから，程度の理由:", 3), ("組織の方針，源泉:", 4), ("個人の思いや価値観:", 5),
+        ("業務上の実践:", 2), ("理由:", 3), ("源泉:", 4), ("価値観:", 5),
         ("個人的意味・価値観の形成背景・真髄:", 6),
     ):
         if any(item.startswith(prefix) for item in facts):

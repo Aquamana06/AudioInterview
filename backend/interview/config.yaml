@@ -32,8 +32,8 @@ retrieval:
 scoring:
   fram_increment: 0.05
   fram_cap: 0.1
-  # 充足した FRAM 項目数ごとの加点。
-  fram_bonuses: {4: 0.1, 5: 0.2, 6: 0.4}
+  # 0より大きい FRAM 項目数に応じたボーナス合計（段階ごとに累積加算しない）。
+  fram_bonuses: {2: 0.05, 3: 0.1, 4: 0.2, 5: 0.2, 6: 0.4}
   irregular_stage_increment: 0.2
   friction_penalty: 0.12
   resistance_penalty: 0.05

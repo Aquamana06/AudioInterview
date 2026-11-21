@@ -72,14 +72,31 @@ class MemoryTests(DatabaseTestCase):
         self.ended_session("ready")
         save_session_memory("admin", "ready", empty_profile(), {"summary": "保存済み", "nodes": [], "edges": []})
         self.add_session("running")
+        fallback = self.ended_session("fallback")
+        with patch("db.memory.configured", return_value=False):
+            asyncio.run(finalize_session("admin", "fallback", "ja", fallback))
+
+        async def recovered_summary(*args):
+            self.assertEqual(self.record("fallback")["status"], "pending")
+            return {"summary": "復旧した要約", "nodes": [], "edges": []}
+
         with patch("db.memory.configured", return_value=True), \
-             patch("db.memory.complete_json", AsyncMock(return_value={"summary": "復旧した要約", "nodes": [], "edges": []})) as generate:
+             patch("db.memory.complete_json", AsyncMock(side_effect=recovered_summary)) as generate:
             asyncio.run(recover_session_memories())
-        self.assertEqual(generate.await_count, 2)
+        self.assertEqual(generate.await_count, 3)
         self.assertEqual(self.record("pending")["status"], "ready")
         self.assertEqual(self.record("missing")["summary"], "復旧した要約")
         self.assertEqual(self.record("ready")["summary"], "保存済み")
         self.assertIsNone(self.record("running")["summary"])
+        self.assertEqual(self.record("fallback")["status"], "ready")
+
+    def test_unexpected_recovery_failure_preserves_record_and_releases_pending_state(self):
+        self.ended_session()
+        with patch("db.memory.finalize_session", AsyncMock(side_effect=RuntimeError("summary failed"))), \
+             self.assertLogs("audiointerview", level="ERROR"):
+            asyncio.run(recover_session_memories())
+        self.assertEqual(self.record()["status"], "fallback")
+        self.assertIn("ダスターを交換しました", self.record()["summary"])
 
     def test_japanese_retrieval_ignores_particles_and_does_not_match_polite_endings_alone(self):
         memory = {"recent_summaries": [

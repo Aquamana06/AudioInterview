@@ -22,12 +22,13 @@ test('text and voice input in the interview screen', async t => {
   })
   install('SpeechSynthesisUtterance', class { constructor(text) { this.text = text } })
   const audioNode = () => ({ connect() {}, disconnect() {}, gain: { value: 0, exponentialRampToValueAtTime() {} } })
+  const processors = []
   install('AudioContext', class {
     sampleRate = 48000
     currentTime = 0
     destination = {}
     createMediaStreamSource() { return audioNode() }
-    createScriptProcessor() { return audioNode() }
+    createScriptProcessor() { const node = audioNode(); processors.push(node); return node }
     createGain() { return audioNode() }
     createOscillator() { return { ...audioNode(), frequency: {}, start() {}, stop() {} } }
     async resume() {}
@@ -75,19 +76,35 @@ test('text and voice input in the interview screen', async t => {
     let stoppedTracks = 0
     let microphone = async () => ({ getTracks: () => [{ stop() { stoppedTracks++ } }] })
     let speechResponse = async () => Response.json({ rawText: '音声回答', maskedText: '音声回答' })
+    const spoken = []
+    speechSynthesis.speak = utterance => {
+      spoken.push(utterance)
+      if (!options.manualSpeech) queueMicrotask(() => { utterance.onstart?.(); utterance.onend?.() })
+    }
     let nextReplyEnds = false
     Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: {
       getUserMedia() { micCalls++; return microphone() },
     } })
     const payload = {
-      session: { id: 'test', language: 'ja', status: options.status ?? 'running', title: 'test' },
+      session: { id: 'test', account_id: 'operator', language: 'ja', status: options.status ?? 'running', title: 'test' },
       messages: [{ id: 'opening', role: 'system', content: options.status === 'ended' ? 'ありがとうございました。' : '？' }],
       state: { turn_count: 0 }, stateLabel: options.status === 'ended' ? 'end' : 'running',
+      memory: { status: options.memoryStatus ?? (options.status === 'ended' ? 'ready' : 'not_started'), summary: null },
     }
+    let createResponse = async () => Response.json(payload)
+    let startResponse = async () => Response.json(payload)
+    let detailResponse = async () => Response.json(payload)
     install('fetch', async (path, options = {}) => {
       calls.push({ path, options })
       if (path === '/api/me') return Response.json({ account: { id: 'operator', role: 'operator', displayName: 'テスト' } })
-      if (path === '/api/sessions' && options.method !== 'POST') return Response.json({ sessions: initialSessions })
+      if (path === '/api/sessions' && options.method !== 'POST') return Response.json({ sessions: initialSessions.map(item =>
+        item.id === payload.session.id ? { ...item, ...payload.session, memory_status: payload.memory.status } : item) })
+      if (path === '/api/sessions' && options.method === 'POST') {
+        const response = await createResponse()
+        if (response.ok && !initialSessions.some(item => item.id === payload.session.id)) initialSessions.push(payload.session)
+        return response
+      }
+      if (path.endsWith('/start')) return startResponse()
       if (path === '/api/local/mask-text') return Response.json({ maskedText: JSON.parse(options.body).text })
       if (path === '/api/speech/transcribe') return speechResponse()
       if (path.endsWith('/messages')) {
@@ -101,18 +118,22 @@ test('text and voice input in the interview screen', async t => {
       }
       if (path.endsWith('/end')) {
         payload.session.status = 'ended'; payload.stateLabel = 'end'
+        payload.memory.status = 'pending'
         payload.messages.push({ id: 'ending', role: 'system', content: 'ありがとうございました。' })
       }
       if (path === '/api/sessions/test' && loadError) return Response.json({ error: '記録を読み込めませんでした' }, { status: 503 })
+      if (path === '/api/sessions/test') return detailResponse()
       return Response.json(payload)
     })
     const initialSessions = options.sessions ?? []
     const loadError = options.loadError
     recorders.length = 0
+    processors.length = 0
     const root = createRoot(document.getElementById('root'))
     await act(async () => { root.render(createElement(App)) })
     await waitFor(() => document.querySelector('.new-session'))
     if (options.openNewSession !== false) {
+      await waitFor(() => !document.querySelector('.new-session').disabled)
       await click(document.querySelector('.new-session'))
       await waitFor(() => loadError ? document.querySelector('[role="alert"]') : document.querySelector('textarea'))
     }
@@ -121,8 +142,13 @@ test('text and voice input in the interview screen', async t => {
       calls,
       get micCalls() { return micCalls },
       get stoppedTracks() { return stoppedTracks },
+      get spoken() { return spoken },
       setMicrophone(fn) { microphone = fn },
       setSpeechResponse(fn) { speechResponse = fn },
+      setCreateResponse(fn) { createResponse = fn },
+      setStartResponse(fn) { startResponse = fn },
+      setDetailResponse(fn) { detailResponse = fn },
+      finishSaving(status = 'ready') { payload.memory.status = status },
       endOnNextReply() { nextReplyEnds = true },
       async dispose() { await act(async () => root.unmount()) },
       async type(text) {
@@ -177,34 +203,193 @@ test('text and voice input in the interview screen', async t => {
     } finally { await ui.dispose() }
   })
 
-  await t.test('automatic completion stops voice input and returns home without waiting for summary', async () => {
+  await t.test('voice feedback displays the corrected transcript used for the answer', async () => {
+    const ui = await setup()
+    try {
+      ui.setSpeechResponse(async () => Response.json({
+        rawText: '15等の温度は15度です。オーバー。',
+        normalizedText: '重合塔の温度は15度です。',
+        maskedText: '重合塔の温度は15度です。', endOfTurn: true,
+      }))
+      await click(document.querySelector('.handsfree-button'))
+      await waitFor(() => recorders[0]?.state === 'recording')
+      await click(document.querySelector('.handsfree-button'))
+      await waitFor(() => ui.calls.some(call => call.path.endsWith('/messages')))
+      assert.match(document.querySelector('.live-strip').textContent, /重合塔の温度は15度です。/)
+      assert.doesNotMatch(document.querySelector('.live-strip').textContent, /15等|オーバー/)
+      const body = JSON.parse(ui.calls.find(call => call.path.endsWith('/messages')).options.body)
+      assert.equal(body.maskedText, '重合塔の温度は15度です。')
+    } finally { await ui.dispose() }
+  })
+
+  await t.test('rolling recognition checks again after one second and automatically submits on a turn command', async t => {
+    const ui = await setup()
+    let now = 10000
+    t.mock.method(Date, 'now', () => now)
+    try {
+      let recognitionCalls = 0
+      ui.setSpeechResponse(async () => {
+        recognitionCalls++
+        return Response.json({ rawText: '確認しました。おば、', normalizedText: '確認しました。', maskedText: '確認しました。', endOfTurn: recognitionCalls > 1 })
+      })
+      await click(document.querySelector('.handsfree-button'))
+      await waitFor(() => recorders[0]?.state === 'recording')
+      const processor = processors[0]
+      const samples = new Float32Array(48000 * 1.2)
+      await act(async () => { processor.onaudioprocess({ inputBuffer: { getChannelData: () => samples } }) })
+      assert.equal(recognitionCalls, 1)
+      assert.equal(recorders[0].state, 'recording')
+      now += 1100
+      await act(async () => { processor.onaudioprocess({ inputBuffer: { getChannelData: () => new Float32Array(4096) } }) })
+      await waitFor(() => ui.calls.some(call => call.path.endsWith('/messages')))
+      assert.equal(recorders[0].state, 'inactive')
+      assert.equal(recognitionCalls, 3) // Two rolling windows and the full answer.
+      assert.equal(ui.calls.filter(call => call.path.endsWith('/messages')).length, 1)
+      assert.equal(JSON.parse(ui.calls.find(call => call.path.endsWith('/messages')).options.body).maskedText, '確認しました。')
+    } finally { await ui.dispose() }
+  })
+
+  await t.test('hands-free recording resumes after a short spoken reply on successive turns', async () => {
+    const ui = await setup()
+    try {
+      await click(document.querySelector('.handsfree-button'))
+      await waitFor(() => recorders[0]?.state === 'recording')
+      for (let turn = 0; turn < 2; turn++) {
+        await act(async () => { recorders[turn].stop() })
+        await waitFor(() => recorders[turn + 1]?.state === 'recording')
+        assert.equal(ui.calls.filter(call => call.path.endsWith('/messages')).length, turn + 1)
+      }
+    } finally { await ui.dispose() }
+  })
+
+  await t.test('hands-free recording recovers after an empty transcription', async () => {
+    const ui = await setup()
+    try {
+      ui.setSpeechResponse(async () => Response.json({ rawText: '', maskedText: '' }))
+      await click(document.querySelector('.handsfree-button'))
+      await waitFor(() => recorders[0]?.state === 'recording')
+      await act(async () => { recorders[0].stop() })
+      await waitFor(() => recorders[1]?.state === 'recording')
+      assert.equal(ui.calls.filter(call => call.path.endsWith('/messages')).length, 0)
+    } finally { await ui.dispose() }
+  })
+
+  await t.test('enabling voice waits for playback and resumes even if playback fails', async () => {
+    const ui = await setup({ manualSpeech: true })
+    try {
+      const opening = ui.spoken[0]
+      assert.ok(opening)
+      await act(async () => { opening.onstart() })
+      await click(document.querySelector('.handsfree-button'))
+      await pause()
+      assert.equal(ui.micCalls, 0)
+      await act(async () => { opening.onerror({ error: 'synthesis-failed' }) })
+      await waitFor(() => recorders[0]?.state === 'recording')
+      // A callback from cancelled playback must not reset the recorder state.
+      await act(async () => { opening.onstart(); opening.onend() })
+      assert.equal(document.querySelector('.speech-status').textContent, 'Recording')
+      assert.equal(ui.micCalls, 1)
+    } finally { await ui.dispose() }
+  })
+
+  await t.test('automatic completion waits for recording to finish before returning home', async () => {
     const ui = await setup()
     try {
       ui.endOnNextReply()
       await click(document.querySelector('.handsfree-button'))
       await waitFor(() => recorders[0]?.state === 'recording')
       await click(document.querySelector('.handsfree-button'))
-      await waitFor(() => document.querySelector('.interview-header button')?.textContent === 'ホームに戻る')
-      assert.equal(document.querySelector('.interview-header button').disabled, false)
-      assert.equal(document.querySelector('.speech-status').textContent, 'Ended')
-      assert.match(document.querySelector('.assistant-bubble').textContent, /ありがとうございました/)
+      await waitFor(() => document.querySelector('.saving-screen'))
+      assert.match(document.querySelector('.saving-screen').textContent, /インタビューの内容を記録しています/)
+      assert.equal(document.querySelector('.new-session').disabled, true)
       assert.equal(recorders[0].state, 'inactive')
       assert.ok(ui.stoppedTracks >= 1)
       assert.equal(ui.calls.filter(call => call.path.endsWith('/end')).length, 0)
-      await waitFor(() => document.querySelector('.empty-state'), 400)
+      await pause(2500) // Completion must depend on the job, not the former 2.4s timer.
+      assert.ok(document.querySelector('.saving-screen'))
+      const createCount = ui.calls.filter(call => call.path === '/api/sessions' && call.options.method === 'POST').length
+      await click(document.querySelector('.new-session'))
+      assert.equal(ui.calls.filter(call => call.path === '/api/sessions' && call.options.method === 'POST').length, createCount)
+      ui.finishSaving()
+      await waitFor(() => document.querySelector('.empty-state'), 200)
       assert.equal(document.querySelector('.interview-layout'), null)
+      assert.equal(document.querySelector('.new-session').disabled, false)
     } finally { await ui.dispose() }
   })
 
-  await t.test('manual completion leaves an enabled home button', async () => {
+  await t.test('manual completion returns home after a fallback record is saved', async () => {
     const ui = await setup()
     try {
       await click(document.querySelector('.interview-header button'))
-      await waitFor(() => document.querySelector('.interview-header button')?.textContent === 'ホームに戻る')
-      assert.equal(document.querySelector('.interview-header button').disabled, false)
+      await waitFor(() => document.querySelector('.saving-screen'))
+      assert.equal(document.querySelector('.new-session').disabled, true)
       assert.equal(ui.calls.filter(call => call.path.endsWith('/end')).length, 1)
+      ui.finishSaving('fallback')
+      await waitFor(() => document.querySelector('.empty-state'), 200)
+    } finally { await ui.dispose() }
+  })
+
+  await t.test('reload resumes waiting for a pending record', async () => {
+    const ended = { id: 'test', account_id: 'operator', language: 'ja', status: 'ended', title: '記録中', memory_status: 'pending' }
+    const ui = await setup({ status: 'ended', memoryStatus: 'pending', sessions: [ended], openNewSession: false })
+    try {
+      assert.ok(document.querySelector('.saving-screen'))
+      assert.equal(document.querySelector('.new-session').disabled, true)
+      ui.finishSaving()
+      await waitFor(() => document.querySelector('.empty-state'), 200)
+      assert.equal(document.querySelector('.new-session').disabled, false)
+    } finally { await ui.dispose() }
+  })
+
+  await t.test('a transient recording status error keeps creation disabled and retries', async () => {
+    const ui = await setup()
+    try {
+      ui.setDetailResponse(async () => Response.json({ error: '一時的なエラー' }, { status: 503 }))
       await click(document.querySelector('.interview-header button'))
-      await waitFor(() => document.querySelector('.empty-state'))
+      await waitFor(() => document.querySelector('.saving-screen .error-message'))
+      assert.equal(document.querySelector('.new-session').disabled, true)
+      ui.setDetailResponse(async () => Response.json({ memory: { status: 'ready' } }))
+      ui.finishSaving()
+      await waitFor(() => document.querySelector('.empty-state'), 200)
+    } finally { await ui.dispose() }
+  })
+
+  await t.test('repeated start clicks send one create request and one start request', async () => {
+    const ui = await setup({ openNewSession: false })
+    try {
+      let resolveCreate
+      let resolveStart
+      ui.setCreateResponse(() => new Promise(resolve => { resolveCreate = resolve }))
+      ui.setStartResponse(() => new Promise(resolve => { resolveStart = resolve }))
+      const sidebarButton = document.querySelector('.new-session')
+      const homeButton = document.querySelector('.empty-state button')
+      await act(async () => { sidebarButton.click(); homeButton.click(); sidebarButton.click() })
+      assert.equal(ui.calls.filter(call => call.path === '/api/sessions' && call.options.method === 'POST').length, 1)
+      assert.equal(sidebarButton.disabled, true)
+      assert.match(document.querySelector('.workspace [role="status"]').textContent, /準備しています/)
+      await act(async () => { resolveCreate(Response.json({ session: { id: 'test' } })) })
+      await waitFor(() => Boolean(resolveStart))
+      await click(sidebarButton)
+      assert.equal(ui.calls.filter(call => call.path.endsWith('/start')).length, 1)
+      await act(async () => { resolveStart(Response.json({})) })
+      await waitFor(() => document.querySelector('textarea'))
+      assert.equal(ui.calls.filter(call => call.path === '/api/sessions' && call.options.method === 'POST').length, 1)
+    } finally { await ui.dispose() }
+  })
+
+  await t.test('retrying a failed opening reuses the created session', async () => {
+    const ui = await setup({ openNewSession: false })
+    try {
+      ui.setStartResponse(async () => Response.json({ error: '開始できませんでした' }, { status: 503 }))
+      await click(document.querySelector('.new-session'))
+      await waitFor(() => document.querySelector('[role="alert"]'))
+      assert.match(document.querySelector('[role="alert"]').textContent, /開始できませんでした/)
+      assert.equal(document.querySelector('.new-session').disabled, false)
+      ui.setStartResponse(async () => Response.json({}))
+      await click(document.querySelector('.new-session'))
+      await waitFor(() => document.querySelector('textarea'))
+      assert.equal(ui.calls.filter(call => call.path === '/api/sessions' && call.options.method === 'POST').length, 1)
+      assert.equal(ui.calls.filter(call => call.path.endsWith('/start')).length, 2)
     } finally { await ui.dispose() }
   })
 

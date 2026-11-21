@@ -126,6 +126,50 @@ class APITests(DatabaseTestCase):
         self.finalize.assert_awaited_once()
         self.assertEqual(self.client.post(path + "/messages", json={"maskedText": "続き"}).status_code, 409)
 
+    def test_pending_memory_blocks_creation_and_opening_until_recorded(self):
+        self.login()
+        ended_id = self.session()
+        waiting_id = self.session()
+        self.client.post(f"/api/sessions/{ended_id}/end")
+        details = self.client.get(f"/api/sessions/{ended_id}").json()
+        self.assertEqual(details["memory"]["status"], "pending")
+        self.assertTrue(details["memory"]["summary"])
+        listing = self.client.get("/api/sessions").json()["sessions"]
+        self.assertEqual(next(item for item in listing if item["id"] == ended_id)["memory_status"], "pending")
+        response = self.client.post("/api/sessions", json={"language": "ja"})
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("記録しています", response.json()["error"])
+        self.assertEqual(self.client.post(f"/api/sessions/{waiting_id}/start").status_code, 409)
+        self.starter.assert_not_awaited()
+        self.assertEqual(len(self.client.get("/api/sessions").json()["sessions"]), 2)
+        for status in ("ready", "fallback"):
+            with self.subTest(status=status):
+                with database() as connection:
+                    connection.execute("UPDATE session_memory_jobs SET status=? WHERE session_id=?", (status, ended_id))
+                self.assertEqual(self.client.get(f"/api/sessions/{ended_id}").json()["memory"]["status"], status)
+                self.session()
+        with patch("api.routes.longitudinal_starter", AsyncMock(return_value="前回の続きについて教えてください。")):
+            self.assertEqual(self.client.post(f"/api/sessions/{waiting_id}/start").status_code, 200)
+
+    def test_another_accounts_pending_memory_does_not_block_creation(self):
+        self.login()
+        self.operator("operator_one")
+        self.login("operator_one", "")
+        ended_id = self.session()
+        self.client.post(f"/api/sessions/{ended_id}/end")
+        self.login()
+        self.session()
+
+    def test_unexpected_finalization_failure_releases_pending_state(self):
+        self.login()
+        session_id = self.session()
+        self.finalize.side_effect = RuntimeError("summary failed")
+        self.assertEqual(self.client.post(f"/api/sessions/{session_id}/end").status_code, 200)
+        memory = self.client.get(f"/api/sessions/{session_id}").json()["memory"]
+        self.assertEqual(memory["status"], "fallback")
+        self.assertTrue(memory["summary"])
+        self.session()
+
     def test_edit_replays_history_and_discards_later_turns(self):
         self.login()
         path = f"/api/sessions/{self.session()}"
@@ -168,6 +212,17 @@ class APITests(DatabaseTestCase):
         self.assertEqual(response.json()["maskedText"], "薬品Aを確認")
         transcribe.assert_called_once_with(b"audio", "sample.webm", "ja")
 
+    def test_speech_corrects_tower_context_without_changing_raw_transcript_or_numbers(self):
+        self.login()
+        raw = "15等の温度は15度です。オーバー。"
+        with patch("api.routes.local_whisper.transcribe", return_value=raw):
+            response = self.client.post("/api/speech/transcribe", files={"audio": ("sample.webm", b"audio", "audio/webm")})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["rawText"], raw)
+        self.assertEqual(response.json()["normalizedText"], "重合塔の温度は15度です。")
+        self.assertEqual(response.json()["maskedText"], "重合塔の温度は15度です。")
+        self.assertTrue(response.json()["endOfTurn"])
+
     def test_speech_endpoint_detects_and_removes_end_command_on_server(self):
         self.login()
         for text, expected, ended in [
@@ -175,6 +230,11 @@ class APITests(DatabaseTestCase):
             ("inspection complete, over!", "inspection complete,", True),
             ("coverage is sufficient", "coverage is sufficient", False),
             ("オーバー", "", True),
+            ("塩酸を確認。オーバー，", "薬品Aを確認。", True),
+            ("塩酸を確認。おば、", "薬品Aを確認。", True),
+            ("塩酸を確認。おばー。", "薬品Aを確認。", True),
+            ("塩酸を確認。ｵｰﾊﾞｰ…", "薬品Aを確認。", True),
+            ("オーバーフローを確認", "オーバーフローを確認", False),
         ]:
             with self.subTest(text=text), patch("api.routes.local_whisper.transcribe", return_value=text):
                 response = self.client.post("/api/speech/transcribe", files={"audio": ("recording.wav", b"audio", "audio/wav")})

@@ -22,6 +22,7 @@ from config import load_config
 from llm.client import status as llm_status
 from llm.terminology import prepare_text
 from whisper.main import whisper as local_whisper
+from whisper.terminology.turn_commands import split_turn_command
 
 
 LANGUAGES = {"ja", "en", "de"}
@@ -167,6 +168,13 @@ async def _finalize_session_safe(session: dict) -> None:
         await finalize_session(session["account_id"], session["id"], session["language"], messages)
     except Exception:
         logger.exception("[interview] session_id=%s Failed to finalize session memory", session["id"])
+        # The verbatim record was saved before scheduling this task. Release
+        # the pending state even if an unexpected summarization error escapes.
+        with database() as connection:
+            connection.execute(
+                "UPDATE session_memory_jobs SET status='fallback', updated_at=? WHERE session_id=? AND status='pending'",
+                (now_iso(), session["id"]),
+            )
 
 
 async def _replay_after_edit(session: dict, message_id: str, content: str) -> dict:
@@ -271,16 +279,30 @@ async def change_password(request: Request, body: dict, account: dict = Depends(
 
 async def sessions(account: dict = Depends(require_account)):
     with database() as connection:
+        query = """SELECT s.*, j.status AS memory_status FROM interview_sessions s
+                   LEFT JOIN session_memory_jobs j ON j.session_id=s.id"""
         if account["role"] == "admin":
-            rows = connection.execute("SELECT * FROM interview_sessions ORDER BY updated_at DESC").fetchall()
+            rows = connection.execute(query + " ORDER BY s.updated_at DESC").fetchall()
         else:
             rows = connection.execute(
-                "SELECT * FROM interview_sessions WHERE account_id=? ORDER BY updated_at DESC", (account["id"],)
+                query + " WHERE s.account_id=? ORDER BY s.updated_at DESC", (account["id"],)
             ).fetchall()
     return {"sessions": [dict(row) for row in rows]}
 
 
+def _require_memory_complete(account_id: str) -> None:
+    with database() as connection:
+        pending = connection.execute(
+            """SELECT 1 FROM interview_sessions s JOIN session_memory_jobs j ON j.session_id=s.id
+               WHERE s.account_id=? AND s.status='ended' AND j.status='pending' LIMIT 1""",
+            (account_id,),
+        ).fetchone()
+    if pending:
+        raise HTTPException(409, "インタビューの内容を記録しています。完了するまでお待ちください")
+
+
 async def create_session(body: dict, account: dict = Depends(require_account)):
+    _require_memory_complete(account["id"])
     language = _lang(body.get("language"))
     session_id = new_id("interview")
     title = str(body.get("title") or "").strip() or f"Interview {datetime.now().strftime('%Y/%m/%d')}"
@@ -304,6 +326,7 @@ async def start_session(session_id: str, account: dict = Depends(require_account
     with database() as connection:
         existing = list_messages(connection, session_id)
     if not existing:
+        _require_memory_complete(session["account_id"])
         memory = load_participant_profile(session["account_id"])
         opening = (
             await profile_starter(session["language"], domain_knowledge=memory.get("domain_knowledge", []))
@@ -366,11 +389,10 @@ async def speech_transcribe(request: Request, account: dict = Depends(require_ac
     if not content:
         raise HTTPException(400, "Audio file is empty")
     raw_text = await asyncio.to_thread(local_whisper.transcribe, content, filename, language)
-    # Preserve the raw transcript for display, and keep the stop command out of the answer.
-    command = re.search(r"(?:\bover\b|オーバー|オーバ|おーばー|おおばー)[\s.,!?。、！？]*$", raw_text, re.I)
-    answer = raw_text[:command.start()].rstrip() if command else raw_text
+    # Keep the original transcript for diagnostics and the stop command out of the answer.
+    answer, end_of_turn = split_turn_command(raw_text)
     normalized = prepare_text(answer)
-    return {"rawText": raw_text, **normalized, "endOfTurn": command is not None}
+    return {"rawText": raw_text, **normalized, "endOfTurn": end_of_turn}
 
 
 async def admin_accounts(account: dict = Depends(require_admin)):

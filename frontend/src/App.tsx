@@ -8,10 +8,10 @@ import { pcmToWav, transcribeAudio } from './speech'
 type Language = 'ja' | 'en' | 'de'
 type Role = 'admin' | 'operator'
 type Account = { id: string; role: Role; displayName: string }
-type Session = { id: string; account_id: string; title: string; language: Language; status: 'running' | 'ended'; started_at: string; updated_at: string }
+type Session = { id: string; account_id: string; title: string; language: Language; status: 'running' | 'ended'; started_at: string; updated_at: string; memory_status?: 'pending' | 'ready' | 'fallback' | null }
 type Message = { id: string; role: 'system' | 'user'; content: string; inputMode: 'text' | 'voice' | 'system'; createdAt: string; updatedAt: string }
 type InterviewState = { task_coverage: number; task_depth: number; irregular_coverage: number; turn_count: number }
-type SessionPayload = { session: Session; messages: Message[]; state: InterviewState; stateLabel: 'running' | 'end' }
+type SessionPayload = { session: Session; messages: Message[]; state: InterviewState; stateLabel: 'running' | 'end'; memory: { status: 'not_started' | 'pending' | 'ready' | 'fallback'; summary: string | null } }
 type SpeechState = 'ready' | 'wake' | 'recording' | 'transcribing' | 'thinking' | 'speaking' | 'ended' | 'error'
 
 type BarcodeDetectorLike = { detect(source: ImageBitmap): Promise<Array<{ rawValue: string }>> }
@@ -139,7 +139,39 @@ function AdminPanel({ onOpenSession }: { onOpenSession: (id: string) => void }) 
   </div>
 }
 
-function Interview({ sessionId, onSessionsChanged, onExit }: { sessionId: string; onSessionsChanged: () => void; onExit: () => void }) {
+function SavingInterview({ sessionId, onFinished }: { sessionId: string; onFinished: () => Promise<void> }) {
+  const [error, setError] = useState('')
+  useEffect(() => {
+    let cancelled = false
+    let timer: number | undefined
+    async function check() {
+      try {
+        const result = await api<SessionPayload>(`/api/sessions/${sessionId}`)
+        if (cancelled) return
+        if (result.memory.status === 'ready' || result.memory.status === 'fallback') {
+          await onFinished()
+          return
+        }
+        setError('')
+      } catch {
+        if (cancelled) return
+        setError('記録状況を確認できませんでした。接続を確認しながら、もうしばらくお待ちください')
+      }
+      if (!cancelled) timer = window.setTimeout(() => { void check() }, 1000)
+    }
+    void check()
+    return () => { cancelled = true; window.clearTimeout(timer) }
+  }, [sessionId, onFinished])
+
+  return <div className="loading saving-screen" role="status" aria-live="polite" aria-busy="true">
+    <div className="thinking-dots" aria-hidden="true"><i /><i /><i /></div>
+    <h2>インタビューの内容を記録しています</h2>
+    <p>記録が完了すると、自動でホームに戻ります。</p>
+    {error && <p className="error-message">{error}</p>}
+  </div>
+}
+
+function Interview({ sessionId, onSessionsChanged, onExit, onCompleted }: { sessionId: string; onSessionsChanged: () => void; onExit: () => void; onCompleted: (sessionId: string) => void }) {
   const [payload, setPayload] = useState<SessionPayload | null>(null)
   const [text, setText] = useState('')
   const [displayOverrides, setDisplayOverrides] = useState<Record<string, string>>({})
@@ -150,6 +182,7 @@ function Interview({ sessionId, onSessionsChanged, onExit }: { sessionId: string
   const [handsFree, setHandsFree] = useState(false)
   const [isRecording, setIsRecording] = useState(false)
   const [isBusy, setIsBusy] = useState(false)
+  const [isFinalizing, setIsFinalizing] = useState(false)
   const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null)
   const recorderRef = useRef<MediaRecorder | null>(null)
   const recordingRef = useRef(false)
@@ -157,6 +190,7 @@ function Interview({ sessionId, onSessionsChanged, onExit }: { sessionId: string
   const chunksRef = useRef<Blob[]>([])
   const handsFreeRef = useRef(false)
   const finalizingRef = useRef(false)
+  const startingRecordingRef = useRef<number | null>(null)
   const transcriptionSequenceRef = useRef(0)
   const pendingSpeechRef = useRef<{ content: string; language: Language } | null>(null)
   const startRecordingRef = useRef<() => void>(() => undefined)
@@ -164,7 +198,6 @@ function Interview({ sessionId, onSessionsChanged, onExit }: { sessionId: string
   const initialSpeechStartedRef = useRef(false)
   const speechGenerationRef = useRef(0)
   const busyRef = useRef(false)
-  const completedHereRef = useRef(false)
   const overDetectorRef = useRef<{
     context: AudioContext
     source: MediaStreamAudioSourceNode
@@ -177,15 +210,22 @@ function Interview({ sessionId, onSessionsChanged, onExit }: { sessionId: string
   const speak = useCallback((value: string, language: Language) => {
     const generation = ++speechGenerationRef.current
     speechSynthesis.cancel()
-    const parts = value.match(/[^。！？.!?]+[。！？.!?]?/g)?.map(part => part.trim()).filter(Boolean) ?? [value]
+    const sentences = value.match(/[^。！？.!?]+[。！？.!?]?/g)?.map(part => part.trim()).filter(Boolean)
+    const parts = sentences?.length ? sentences : [value]
     parts.forEach((part, index) => {
       const utterance = new SpeechSynthesisUtterance(part); utterance.lang = locale[language]; utterance.rate = 1.2; utterance.pitch = 1.0
-      utterance.onstart = () => setSpeechState('speaking')
+      utterance.onstart = () => { if (generation === speechGenerationRef.current) setSpeechState('speaking') }
       utterance.onend = () => {
         if (generation === speechGenerationRef.current && index === parts.length - 1) {
           setSpeechState('ready')
-          if (handsFreeRef.current) window.setTimeout(() => startRecordingRef.current(), 0)
         }
+      }
+      utterance.onerror = () => {
+        if (generation !== speechGenerationRef.current) return
+        speechGenerationRef.current += 1
+        speechSynthesis.cancel()
+        setError('質問の読み上げに失敗しました。画面の質問を確認して回答してください')
+        setSpeechState('ready')
       }
       speechSynthesis.speak(utterance)
     })
@@ -203,10 +243,7 @@ function Interview({ sessionId, onSessionsChanged, onExit }: { sessionId: string
     switchToTextInput()
     setStreamingMessageId(null)
     setSpeechState('ended')
-    if (!completedHereRef.current) return
-    const timer = window.setTimeout(onExit, 2400)
-    return () => window.clearTimeout(timer)
-  }, [payload?.session.status, onExit])
+  }, [payload?.session.status])
   useEffect(() => {
     if (!payload || initialSpeechStartedRef.current || payload.session.status === 'ended') return
     const opening = payload.messages.length === 1 && payload.messages[0].role === 'system' ? payload.messages[0] : null
@@ -235,6 +272,13 @@ function Interview({ sessionId, onSessionsChanged, onExit }: { sessionId: string
     }, 90)
     return () => window.clearInterval(timer)
   }, [streamingMessageId, payload, speak])
+  useEffect(() => {
+    // Recheck when either playback or the previous turn finishes. A one-shot
+    // onend callback can arrive while finalization still prevents recording.
+    if (!handsFree || (speechState !== 'ready' && speechState !== 'wake') || isBusy || isFinalizing || streamingMessageId || payload?.session.status !== 'running') return
+    const timer = window.setTimeout(() => startRecordingRef.current(), 0)
+    return () => window.clearTimeout(timer)
+  }, [handsFree, speechState, isBusy, isFinalizing, streamingMessageId, payload?.session.status])
   useEffect(() => () => {
     handsFreeRef.current = false
     speechGenerationRef.current += 1
@@ -273,7 +317,7 @@ function Interview({ sessionId, onSessionsChanged, onExit }: { sessionId: string
       detector.samples.push(...event.inputBuffer.getChannelData(0))
       const maxSamples = Math.round(context.sampleRate * 4)
       if (detector.samples.length > maxSamples) detector.samples.splice(0, detector.samples.length - maxSamples)
-      if (detector.processing || detector.samples.length < context.sampleRate * 1.2 || Date.now() - detector.lastRequestAt < 2000) return
+      if (detector.processing || detector.samples.length < context.sampleRate * 1.2 || Date.now() - detector.lastRequestAt < 1000) return
       detector.lastRequestAt = Date.now()
       detector.processing = true
       const snapshot = new Float32Array(detector.samples)
@@ -311,14 +355,15 @@ function Interview({ sessionId, onSessionsChanged, onExit }: { sessionId: string
     setLiveTranscript('サーバーで音声を解析しています…')
     const result = await transcribeAudio(blob, payload.session.language)
     if (sequence === transcriptionSequenceRef.current) {
-      setLiveTranscript(result.rawText)
+      setLiveTranscript(result.normalizedText ?? result.rawText)
     }
     return result
   }
 
   async function startRecording() {
-    if (!handsFreeRef.current || !payload || payload.session.status === 'ended' || recordingRef.current || busyRef.current || finalizingRef.current) return
+    if (!handsFreeRef.current || !payload || payload.session.status === 'ended' || recordingRef.current || startingRecordingRef.current !== null || busyRef.current || finalizingRef.current) return
     const generation = voiceGenerationRef.current
+    startingRecordingRef.current = generation
     try {
       setError(''); setLiveTranscript(''); finalizingRef.current = false
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
@@ -339,13 +384,15 @@ function Interview({ sessionId, onSessionsChanged, onExit }: { sessionId: string
       if (generation !== voiceGenerationRef.current) return
       handsFreeRef.current = false; setHandsFree(false)
       setError(caught instanceof Error ? caught.message : 'マイクを開始できません'); setSpeechState('error')
+    } finally {
+      if (startingRecordingRef.current === generation) startingRecordingRef.current = null
     }
   }
   startRecordingRef.current = startRecording
 
   async function finishRecording(mimeType: string) {
     const generation = voiceGenerationRef.current
-    recordingRef.current = false; setIsRecording(false); finalizingRef.current = true
+    recordingRef.current = false; setIsRecording(false); finalizingRef.current = true; setIsFinalizing(true)
     stopOverDetector()
     streamRef.current?.getTracks().forEach(track => track.stop()); streamRef.current = null; setSpeechState('transcribing'); beep(520, 0.3)
     try {
@@ -358,7 +405,7 @@ function Interview({ sessionId, onSessionsChanged, onExit }: { sessionId: string
       const result = await transcribe(blob)
       if (generation !== voiceGenerationRef.current) return
       const answer = (result?.maskedText ?? '').trim()
-      if (answer) await send(answer, 'voice', result?.rawText, true, result?.maskedText)
+      if (answer) await send(answer, 'voice', result?.normalizedText ?? result?.rawText, true, result?.maskedText)
       else {
         setError('音声を認識できませんでした。もう一度、少し長めに話してください')
         setSpeechState('ready')
@@ -369,7 +416,7 @@ function Interview({ sessionId, onSessionsChanged, onExit }: { sessionId: string
       }
     }
     finally {
-      if (generation === voiceGenerationRef.current) { recorderRef.current = null; finalizingRef.current = false }
+      if (generation === voiceGenerationRef.current) { recorderRef.current = null; finalizingRef.current = false; setIsFinalizing(false) }
     }
   }
 
@@ -388,10 +435,8 @@ function Interview({ sessionId, onSessionsChanged, onExit }: { sessionId: string
       handsFreeRef.current = false; setHandsFree(false); if (!recordingRef.current) setSpeechState('ready'); return
     }
     // Record locally and send short audio windows to the server for turn detection.
-    handsFreeRef.current = true; setHandsFree(true); setSpeechState('wake')
-    if (speechState !== 'speaking' && speechState !== 'thinking' && !recordingRef.current) {
-      window.setTimeout(() => { void startRecording() }, 0)
-    }
+    handsFreeRef.current = true; setHandsFree(true)
+    if (speechState !== 'speaking' && speechState !== 'thinking') setSpeechState('wake')
   }
 
   function switchToTextInput() {
@@ -400,6 +445,7 @@ function Interview({ sessionId, onSessionsChanged, onExit }: { sessionId: string
     globalThis.speechSynthesis?.cancel()
     pendingSpeechRef.current = null
     voiceGenerationRef.current += 1
+    startingRecordingRef.current = null
     transcriptionSequenceRef.current += 1
     stopOverDetector()
     const recorder = recorderRef.current
@@ -411,7 +457,7 @@ function Interview({ sessionId, onSessionsChanged, onExit }: { sessionId: string
     recorderRef.current = null
     streamRef.current?.getTracks().forEach(track => track.stop()); streamRef.current = null
     recordingRef.current = false; setIsRecording(false)
-    finalizingRef.current = false; setLiveTranscript('')
+    finalizingRef.current = false; setIsFinalizing(false); setLiveTranscript('')
     if (!busyRef.current) setSpeechState('ready')
   }
 
@@ -425,18 +471,21 @@ function Interview({ sessionId, onSessionsChanged, onExit }: { sessionId: string
         ? { maskedText: preparedMaskedText }
         : await api<{ normalizedText: string; maskedText: string }>('/api/local/mask-text', jsonInit('POST', { text: content }))
       const result = await api<SessionPayload>(`/api/sessions/${payload.session.id}/messages`, jsonInit('POST', { maskedText: prepared.maskedText, inputMode, editMessageId: editingId || undefined }))
-      if (result.session.status === 'ended') completedHereRef.current = true
+      if (result.session.status === 'ended') {
+        onCompleted(result.session.id)
+        return
+      }
       const newUser = result.messages.find(message => message.role === 'user' && !beforeIds.has(message.id))
       if (newUser && displayText) setDisplayOverrides(current => ({ ...current, [newUser.id]: displayText }))
       setPayload(result); setText(''); setEditingId(null); onSessionsChanged()
       const assistant = [...result.messages].reverse().find(message => message.role === 'system')
-      if (assistant && result.session.status !== 'ended') {
+      if (assistant) {
         setDisplayOverrides(current => ({ ...current, [assistant.id]: '' }))
         pendingSpeechRef.current = handsFreeRef.current
           ? { content: assistant.content, language: result.session.language }
           : null
         setStreamingMessageId(assistant.id)
-      } else setSpeechState(result.session.status === 'ended' ? 'ended' : 'ready')
+      } else setSpeechState('ready')
     } catch (caught) { setError(caught instanceof Error ? caught.message : '送信できませんでした'); setSpeechState('error') }
     finally { if (manageBusy) { busyRef.current = false; setIsBusy(false) } }
   }
@@ -451,8 +500,7 @@ function Interview({ sessionId, onSessionsChanged, onExit }: { sessionId: string
     busyRef.current = true; setIsBusy(true); setError('')
     try {
       const result = await api<SessionPayload>(`/api/sessions/${payload.session.id}/end`, { method: 'POST' })
-      completedHereRef.current = true
-      setPayload(result); onSessionsChanged()
+      onCompleted(result.session.id)
     } catch (caught) { setError(caught instanceof Error ? caught.message : '終了処理に失敗しました') }
     finally { busyRef.current = false; setIsBusy(false) }
   }
@@ -498,7 +546,13 @@ function App() {
   const [view, setView] = useState<'interview' | 'admin'>('interview')
   const [language, setLanguage] = useState<Language>('ja')
   const [authChecked, setAuthChecked] = useState(false)
+  const [sessionsLoaded, setSessionsLoaded] = useState(false)
+  const [isStarting, setIsStarting] = useState(false)
+  const [savingSessionId, setSavingSessionId] = useState<string | null>(null)
+  const [startError, setStartError] = useState('')
   const initialSessionResolved = useRef(false)
+  const startingSessionRef = useRef(false)
+  const pendingStartRef = useRef<string | null>(null)
 
   const loadSessions = useCallback(async () => {
     try {
@@ -506,29 +560,61 @@ function App() {
       setSessions(result.sessions)
       if (!initialSessionResolved.current) {
         initialSessionResolved.current = true
-        if (result.sessions[0]?.status === 'running') setSelectedId(result.sessions[0].id)
+        const pending = result.sessions.find(item => item.account_id === account?.id && item.status === 'ended' && item.memory_status === 'pending')
+        if (pending) setSavingSessionId(pending.id)
+        else if (result.sessions[0]?.status === 'running') setSelectedId(result.sessions[0].id)
       }
+      return result.sessions
     } catch { /* login handles auth */ }
-  }, [])
+    finally { setSessionsLoaded(true) }
+  }, [account?.id])
   const exitInterview = useCallback(() => { setSelectedId(null); setView('interview') }, [])
+  const completeInterview = useCallback((id: string) => { setSavingSessionId(id) }, [])
+  const finishSaving = useCallback(async () => {
+    const updated = await loadSessions()
+    // Refresh before enabling creation, including any older pending session.
+    if (!updated) throw new Error('セッション一覧を確認できませんでした')
+    const pending = updated.find(item => item.account_id === account?.id && item.status === 'ended' && item.memory_status === 'pending')
+    setSavingSessionId(pending?.id ?? null)
+    if (!pending) exitInterview()
+  }, [account?.id, loadSessions, exitInterview])
   useEffect(() => { api<{ account: Account }>('/api/me').then(result => { setAccount(result.account); setAuthChecked(true) }).catch(() => setAuthChecked(true)) }, [])
   useEffect(() => { if (account) void loadSessions() }, [account, loadSessions])
   useEffect(() => { if (account?.role === 'admin') setView('admin') }, [account])
 
   async function createSession() {
-    const result = await api<SessionPayload>('/api/sessions', jsonInit('POST', { language })); await api(`/api/sessions/${result.session.id}/start`, { method: 'POST' }); setSelectedId(result.session.id); setView('interview'); await loadSessions()
+    if (startingSessionRef.current || savingSessionId || !sessionsLoaded) return
+    startingSessionRef.current = true
+    setIsStarting(true); setStartError('')
+    try {
+      if (!pendingStartRef.current) {
+        const result = await api<SessionPayload>('/api/sessions', jsonInit('POST', { language }))
+        pendingStartRef.current = result.session.id
+      }
+      const id = pendingStartRef.current
+      await api(`/api/sessions/${id}/start`, { method: 'POST' })
+      pendingStartRef.current = null
+      setSelectedId(id); setView('interview')
+      await loadSessions()
+    } catch (caught) {
+      setStartError(caught instanceof Error ? caught.message : 'インタビューを開始できませんでした')
+    } finally {
+      startingSessionRef.current = false
+      setIsStarting(false)
+    }
   }
-  async function signOut() { await api('/api/auth/logout', { method: 'POST' }); setAccount(null); setSessions([]); setSelectedId(null); initialSessionResolved.current = false }
+  async function signOut() { await api('/api/auth/logout', { method: 'POST' }); setAccount(null); setSessions([]); setSelectedId(null); setSavingSessionId(null); setSessionsLoaded(false); setStartError(''); pendingStartRef.current = null; initialSessionResolved.current = false }
   if (!authChecked) return <div className="loading">AudioInterviewを準備しています…</div>
   if (!account) return <Login onLogin={value => { setAccount(value); setView(value.role === 'admin' ? 'admin' : 'interview'); setAuthChecked(true) }} />
 
   const inInterview = view === 'interview' && Boolean(selectedId)
+  const navigationLocked = isStarting || Boolean(savingSessionId) || !sessionsLoaded
   return <div className={`app-shell ${inInterview ? 'interview-app' : ''}`}>
-    <aside className="sidebar"><div className="sidebar-brand"><span>AI</span><strong>AudioInterview</strong></div>{account.role === 'admin' && <button className={`admin-entry ${view === 'admin' ? 'selected' : ''}`} onClick={() => setView('admin')}>⚙ ID発行・管理画面</button>}<button className="new-session" onClick={createSession}>＋ 新しいインタビュー</button><label className="language-picker">言語<select value={language} onChange={event => setLanguage(event.target.value as Language)}>{Object.entries(languageLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
-      <nav><p>セッション</p>{sessions.map(item => <button key={item.id} className={selectedId === item.id && view === 'interview' ? 'selected' : ''} onClick={() => { setSelectedId(item.id); setView('interview') }}><span>{item.title}</span><small>{languageLabels[item.language]} · {item.status}</small></button>)}</nav>
-      <div className="sidebar-bottom"><div className="account-chip"><span className="avatar small">{account.displayName.slice(0, 1)}</span><div><strong>{account.displayName}</strong><small>{account.id}</small></div><button title="ログアウト" onClick={signOut}>↪</button></div></div>
+    <aside className="sidebar"><div className="sidebar-brand"><span>AI</span><strong>AudioInterview</strong></div>{account.role === 'admin' && <button className={`admin-entry ${view === 'admin' ? 'selected' : ''}`} onClick={() => setView('admin')} disabled={navigationLocked}>⚙ ID発行・管理画面</button>}<button className="new-session" onClick={createSession} disabled={navigationLocked}>{isStarting ? 'インタビューを準備中…' : savingSessionId ? 'インタビューを記録中…' : '＋ 新しいインタビュー'}</button><label className="language-picker">言語<select value={language} onChange={event => setLanguage(event.target.value as Language)} disabled={navigationLocked}>{Object.entries(languageLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+      <nav><p>セッション</p>{sessions.map(item => <button key={item.id} className={selectedId === item.id && view === 'interview' ? 'selected' : ''} onClick={() => { setSelectedId(item.id); setView('interview') }} disabled={navigationLocked}><span>{item.title}</span><small>{languageLabels[item.language]} · {item.status}</small></button>)}</nav>
+      <div className="sidebar-bottom"><div className="account-chip"><span className="avatar small">{account.displayName.slice(0, 1)}</span><div><strong>{account.displayName}</strong><small>{account.id}</small></div><button title="ログアウト" onClick={signOut} disabled={navigationLocked}>↪</button></div></div>
     </aside>
-    <main className="workspace">{view === 'admin' ? <AdminPanel onOpenSession={id => { setSelectedId(id); setView('interview') }} /> : selectedId ? <Interview key={selectedId} sessionId={selectedId} onSessionsChanged={loadSessions} onExit={exitInterview} /> : <div className="empty-state"><div>✦</div><h2>インタビューを始めましょう</h2><p>言語を選び、「新しいインタビュー」を押してください。</p><button className="primary" onClick={createSession}>新しいインタビュー</button></div>}</main>
+    <main className="workspace">{startError && <p className="error-message" role="alert">{startError}</p>}{savingSessionId ? <SavingInterview key={savingSessionId} sessionId={savingSessionId} onFinished={finishSaving} /> : isStarting ? <div className="loading" role="status" aria-busy="true">インタビューを準備しています…</div> : view === 'admin' ? <AdminPanel onOpenSession={id => { setSelectedId(id); setView('interview') }} /> : selectedId ? <Interview key={selectedId} sessionId={selectedId} onSessionsChanged={loadSessions} onExit={exitInterview} onCompleted={completeInterview} /> : <div className="empty-state"><div>✦</div><h2>インタビューを始めましょう</h2><p>言語を選び、「新しいインタビュー」を押してください。</p><button className="primary" onClick={createSession} disabled={navigationLocked}>新しいインタビュー</button></div>}</main>
   </div>
 }
 

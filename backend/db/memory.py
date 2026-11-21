@@ -63,6 +63,11 @@ async def recover_session_memories() -> None:
         with database() as connection:
             messages = list_messages(connection, session["id"])
         ensure_session_memory(session["account_id"], session["id"], messages)
+        with database() as connection:
+            connection.execute(
+                "UPDATE session_memory_jobs SET status='pending', updated_at=? WHERE session_id=? AND status='fallback'",
+                (now_iso(), session["id"]),
+            )
     for session in sessions:
         try:
             with database() as connection:
@@ -70,6 +75,11 @@ async def recover_session_memories() -> None:
             await finalize_session(session["account_id"], session["id"], session["language"], messages)
         except Exception:
             logger.exception("[interview] session_id=%s 記憶の復旧に失敗しました", session["id"])
+            with database() as connection:
+                connection.execute(
+                    "UPDATE session_memory_jobs SET status='fallback', updated_at=? WHERE session_id=? AND status='pending'",
+                    (now_iso(), session["id"]),
+                )
 
 
 def empty_profile() -> dict[str, Any]:

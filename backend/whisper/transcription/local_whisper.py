@@ -7,7 +7,7 @@ from faster_whisper import WhisperModel
 
 from config import load_config
 
-from ..terminology import TRANSCRIPTION_PROMPT
+from ..terminology import DOMAIN_TERMS, TRANSCRIPTION_PROMPT
 
 
 class LocalWhisper:
@@ -37,6 +37,7 @@ class LocalWhisper:
             segments, _ = self.model.transcribe(
                 np.zeros(16000, dtype=np.float32), language="ja",
                 vad_filter=False, initial_prompt=TRANSCRIPTION_PROMPT,
+                hotwords="、".join(DOMAIN_TERMS),
             )
             # faster-whisper executes inference while consuming the generator.
             for _ in segments:
@@ -68,5 +69,6 @@ class LocalWhisper:
                 language=language or None,
                 vad_filter=load_config("whisper")["transcription"]["vad_filter"],
                 initial_prompt=TRANSCRIPTION_PROMPT,
+                hotwords="、".join(DOMAIN_TERMS),
             )
             return "".join(segment.text for segment in segments).strip()

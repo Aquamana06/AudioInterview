@@ -320,3 +320,16 @@ form label, .stack label { display: grid; gap: 6px; margin-bottom: 15px; color: 
   .interview-app .interview-layout { width: 100%; height: 100svh; border-radius: 0; box-shadow: none; }
   .interview-stage { padding-top: 255px; }
 }
+
+.standby .saving-screen { min-height: 0; padding: 12px; background: rgba(255, 250, 235, .94); border-radius: 12px; }
+.standby .saving-screen h2 { font-size: 16px; }
+.standby .saving-screen p { font-size: 12px; }
+.standby .saving-screen .thinking-dots { padding: 4px; }
+.session-boundary { margin: 8px 0 0; padding: 6px 12px; border-radius: 12px; background: rgba(255, 255, 255, .9); color: #53636a; font-size: 12px; }
+.start-interview { width: 100%; }
+.standby .interview-stage { overflow-y: auto; }
+.standby-settings { margin-top: 12px; max-height: 22vh; overflow-y: auto; color: #665847; font-size: 12px; }
+.standby-settings summary { cursor: pointer; }
+.standby-settings label { display: grid; gap: 4px; margin: 10px 0; }
+.standby-settings button { margin: 4px 6px 4px 0; }
+.connection-error { position: absolute; inset: 12px 12px auto; z-index: 10; padding: 12px; border: 1px solid #bd6658; border-radius: 8px; color: #7b4b43; background: #fff8f5; }

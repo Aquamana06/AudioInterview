@@ -48,6 +48,7 @@ test('text and voice input in the interview screen', async t => {
   })
   const server = await createServer({
     root: fileURLToPath(new URL('..', import.meta.url)),
+    cacheDir: 'node_modules/.vite-tests',
     server: { middlewareMode: true, hmr: false, ws: false, watch: null },
   })
   t.after(async () => {
@@ -62,7 +63,7 @@ test('text and voice input in the interview screen', async t => {
   const { act, createElement } = await import('react')
   const { createRoot } = await import('react-dom/client')
   const pause = async (ms = 10) => act(async () => { await new Promise(resolve => setTimeout(resolve, ms)) })
-  async function waitFor(condition, attempts = 100) {
+  async function waitFor(condition, attempts = 600) {
     for (let i = 0; i < attempts; i++) {
       await pause()
       if (condition()) return
@@ -72,6 +73,21 @@ test('text and voice input in the interview screen', async t => {
   const click = async element => act(async () => { element.click() })
   async function setup(options = {}) {
     const calls = []
+    let loggedOut = options.loggedOut
+    const account = { id: options.role === 'admin' ? 'admin' : 'operator', role: options.role ?? 'operator', displayName: 'テスト' }
+    window.localStorage.clear()
+    if (options.workspace) window.localStorage.setItem(`audiointerview.workspace.${account.id}`, JSON.stringify(options.workspace))
+    const recognitions = []
+    if (options.wakeSupported) {
+      window.SpeechRecognition = class {
+        starts = 0
+        active = false
+        constructor() { recognitions.push(this) }
+        start() { this.starts++; this.active = true }
+        abort() { this.active = false; this.onend?.() }
+        result(transcript, isFinal = true) { this.onresult?.({ resultIndex: 0, results: [{ isFinal, 0: { transcript } }] }) }
+      }
+    } else delete window.SpeechRecognition
     let micCalls = 0
     let stoppedTracks = 0
     let microphone = async () => ({ getTracks: () => [{ stop() { stoppedTracks++ } }] })
@@ -91,14 +107,28 @@ test('text and voice input in the interview screen', async t => {
       state: { turn_count: 0 }, stateLabel: options.status === 'ended' ? 'end' : 'running',
       memory: { status: options.memoryStatus ?? (options.status === 'ended' ? 'ready' : 'not_started'), summary: null },
     }
-    let createResponse = async () => Response.json(payload)
+    let sessionNumber = 1
+    let createResponse = async () => {
+      if (payload.session.status === 'ended') {
+        payload.session = { ...payload.session, id: `test-${++sessionNumber}`, status: 'running' }
+        payload.messages = [{ id: `opening-${sessionNumber}`, role: 'system', content: '？' }]
+        payload.stateLabel = 'running'; payload.memory = { status: 'not_started', summary: null }
+        nextReplyEnds = false
+      }
+      return Response.json(payload)
+    }
     let startResponse = async () => Response.json(payload)
     let detailResponse = async () => Response.json(payload)
+    let meResponse = options.meResponse ?? (() => loggedOut ? Response.json({ error: 'Authentication required' }, { status: 401 }) : Response.json({ account }))
+    let sessionsResponse = options.sessionsResponse ?? (() => Response.json({ sessions: initialSessions.map(item =>
+      item.id === payload.session.id ? { ...item, ...payload.session, memory_status: payload.memory.status } : item) }))
     install('fetch', async (path, options = {}) => {
       calls.push({ path, options })
-      if (path === '/api/me') return Response.json({ account: { id: 'operator', role: 'operator', displayName: 'テスト' } })
-      if (path === '/api/sessions' && options.method !== 'POST') return Response.json({ sessions: initialSessions.map(item =>
-        item.id === payload.session.id ? { ...item, ...payload.session, memory_status: payload.memory.status } : item) })
+      if (path === '/api/me') return meResponse()
+      if (path === '/api/auth/login') { loggedOut = false; return Response.json({ account }) }
+      if (path === '/api/admin/accounts') return Response.json({ accounts: [] })
+      if (path === '/api/admin/histories') return Response.json({ histories: [] })
+      if (path === '/api/sessions' && options.method !== 'POST') return sessionsResponse()
       if (path === '/api/sessions' && options.method === 'POST') {
         const response = await createResponse()
         if (response.ok && !initialSessions.some(item => item.id === payload.session.id)) initialSessions.push(payload.session)
@@ -119,7 +149,7 @@ test('text and voice input in the interview screen', async t => {
       if (path.endsWith('/end')) {
         payload.session.status = 'ended'; payload.stateLabel = 'end'
         payload.memory.status = 'pending'
-        payload.messages.push({ id: 'ending', role: 'system', content: 'ありがとうございました。' })
+        payload.messages.push({ id: 'ending', role: 'system', content: 'ありがとうございました。これでインタビューを終了します。' })
       }
       if (path === '/api/sessions/test' && loadError) return Response.json({ error: '記録を読み込めませんでした' }, { status: 503 })
       if (path === '/api/sessions/test') return detailResponse()
@@ -129,10 +159,10 @@ test('text and voice input in the interview screen', async t => {
     const loadError = options.loadError
     recorders.length = 0
     processors.length = 0
-    const root = createRoot(document.getElementById('root'))
+    let root = createRoot(document.getElementById('root'))
     await act(async () => { root.render(createElement(App)) })
-    await waitFor(() => document.querySelector('.new-session'))
-    if (options.openNewSession !== false) {
+    await waitFor(() => document.querySelector(options.authError ? '[role="alert"]' : options.loggedOut ? '.login-card' : '.new-session'))
+    if (options.openNewSession !== false && !options.loggedOut && !options.authError) {
       await waitFor(() => !document.querySelector('.new-session').disabled)
       await click(document.querySelector('.new-session'))
       await waitFor(() => loadError ? document.querySelector('[role="alert"]') : document.querySelector('textarea'))
@@ -140,6 +170,7 @@ test('text and voice input in the interview screen', async t => {
     await pause(150)
     return {
       calls,
+      recognitions,
       get micCalls() { return micCalls },
       get stoppedTracks() { return stoppedTracks },
       get spoken() { return spoken },
@@ -148,8 +179,25 @@ test('text and voice input in the interview screen', async t => {
       setCreateResponse(fn) { createResponse = fn },
       setStartResponse(fn) { startResponse = fn },
       setDetailResponse(fn) { detailResponse = fn },
+      setMeResponse(fn) { meResponse = fn },
+      setSessionsResponse(fn) { sessionsResponse = fn },
+      async reload() {
+        await act(async () => root.unmount())
+        root = createRoot(document.getElementById('root'))
+        await act(async () => { root.render(createElement(App)) })
+      },
       finishSaving(status = 'ready') { payload.memory.status = status },
       endOnNextReply() { nextReplyEnds = true },
+      async login(id, password = '') {
+        await act(async () => {
+          for (const [selector, value] of [['input:not([type])', id], ['input[type="password"]', password]]) {
+            const input = document.querySelector(`.login-card ${selector}`)
+            Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, 'value').set.call(input, value)
+            input.dispatchEvent(new dom.window.Event('input', { bubbles: true }))
+          }
+        })
+        await act(async () => { document.querySelector('.login-card form').dispatchEvent(new dom.window.Event('submit', { bubbles: true, cancelable: true })) })
+      },
       async dispose() { await act(async () => root.unmount()) },
       async type(text) {
         const textarea = document.querySelector('textarea')
@@ -161,6 +209,177 @@ test('text and voice input in the interview screen', async t => {
       },
     }
   }
+
+  await t.test('reload preserves the authenticated interview and voice preference without creating another session', async () => {
+    const ui = await setup()
+    try {
+      await click(document.querySelector('.handsfree-button'))
+      await waitFor(() => recorders[0]?.state === 'recording')
+      const creates = ui.calls.filter(call => call.path === '/api/sessions' && call.options.method === 'POST').length
+      await ui.reload()
+      await waitFor(() => recorders[1]?.state === 'recording')
+      assert.ok(document.querySelector('.interview-layout:not(.standby)'))
+      assert.equal(ui.calls.filter(call => call.path === '/api/auth/login').length, 0)
+      assert.equal(ui.calls.filter(call => call.path === '/api/sessions' && call.options.method === 'POST').length, creates)
+      await ui.type('再読み込み後の回答')
+      await click(document.querySelector('.send'))
+      await waitFor(() => ui.calls.some(call => call.path === '/api/sessions/test/messages'))
+    } finally { await ui.dispose() }
+  })
+
+  await t.test('an unavailable auth API offers retry without presenting the user as logged out', async () => {
+    const ui = await setup({ authError: true, openNewSession: false, meResponse: () => { throw new TypeError('Network unavailable') } })
+    try {
+      assert.match(document.querySelector('[role="alert"]').textContent, /ログイン状態を確認できませんでした/)
+      assert.equal(document.querySelector('.login-card'), null)
+      ui.setMeResponse(() => Response.json({ account: { id: 'operator', role: 'operator', displayName: 'テスト' } }))
+      await click(document.querySelector('.loading button'))
+      await waitFor(() => document.querySelector('.standby'))
+    } finally { await ui.dispose() }
+  })
+
+  await t.test('session list failure offers retry and keeps new sessions disabled', async () => {
+    const ui = await setup({ openNewSession: false, sessionsResponse: () => Response.json({ error: 'Unavailable' }, { status: 503 }) })
+    try {
+      assert.match(document.querySelector('.connection-error').textContent, /セッション一覧を確認できませんでした/)
+      assert.equal(document.querySelector('.start-interview').disabled, true)
+      ui.setSessionsResponse(() => Response.json({ sessions: [] }))
+      await click(document.querySelector('.connection-error button'))
+      await waitFor(() => !document.querySelector('.start-interview').disabled)
+    } finally { await ui.dispose() }
+  })
+
+  await t.test('an expired login during saving returns to login and preserves the saved session', async () => {
+    const ui = await setup()
+    try {
+      ui.setDetailResponse(() => Response.json({ error: 'Authentication required' }, { status: 401 }))
+      ui.setMeResponse(() => Response.json({ error: 'Authentication required' }, { status: 401 }))
+      await click(document.querySelector('.interview-header button'))
+      await waitFor(() => document.querySelector('.login-card'))
+      assert.equal(document.querySelector('.saving-screen'), null)
+      assert.ok(window.localStorage.getItem('audiointerview.workspace.operator'))
+      const calls = ui.calls.filter(call => call.path === '/api/sessions/test').length
+      await pause(1100)
+      assert.equal(ui.calls.filter(call => call.path === '/api/sessions/test').length, calls)
+    } finally { await ui.dispose() }
+  })
+
+  await t.test('a stale saving session refreshes the list instead of retrying a missing record forever', async () => {
+    const ui = await setup()
+    try {
+      ui.setDetailResponse(() => Response.json({ error: 'Session not found' }, { status: 404 }))
+      await click(document.querySelector('.interview-header button'))
+      await waitFor(() => document.querySelector('.saving-screen'))
+      ui.finishSaving()
+      await waitFor(() => document.querySelector('.standby:not(:has(.saving-screen))'))
+      assert.equal(document.querySelector('.start-interview').disabled, false)
+    } finally { await ui.dispose() }
+  })
+
+  await t.test('admin ID and password login opens management without voice standby', async () => {
+    const ui = await setup({ role: 'admin', loggedOut: true, wakeSupported: true })
+    try {
+      await ui.login('admin', 'admin')
+      await waitFor(() => document.querySelector('.admin-grid'))
+      const login = ui.calls.find(call => call.path === '/api/auth/login')
+      assert.deepEqual(JSON.parse(login.options.body), { id: 'admin', password: 'admin' })
+      assert.equal(document.querySelector('.standby'), null)
+      assert.equal(ui.recognitions.length, 0)
+    } finally { await ui.dispose() }
+  })
+
+  await t.test('restored admin authentication also opens management', async () => {
+    const ui = await setup({ role: 'admin', wakeSupported: true, openNewSession: false })
+    try {
+      assert.ok(document.querySelector('.admin-grid'))
+      assert.equal(document.querySelector('.standby'), null)
+      assert.equal(ui.recognitions.length, 0)
+    } finally { await ui.dispose() }
+  })
+
+  await t.test('operator ID alone opens voice standby without creating or resuming an interview', async () => {
+    const running = { id: 'old', account_id: 'operator', language: 'ja', status: 'running', title: '前回のインタビュー' }
+    const ui = await setup({ loggedOut: true, wakeSupported: true, sessions: [running] })
+    try {
+      await ui.login('operator')
+      await waitFor(() => document.querySelector('.standby') && ui.recognitions.some(item => item.active))
+      const login = ui.calls.find(call => call.path === '/api/auth/login')
+      assert.deepEqual(JSON.parse(login.options.body), { id: 'operator', password: '' })
+      assert.equal(document.querySelector('.admin-grid'), null)
+      assert.equal(ui.calls.some(call => call.path === '/api/sessions' && call.options.method === 'POST'), false)
+      assert.equal(ui.calls.some(call => call.path === '/api/sessions/old'), false)
+    } finally { await ui.dispose() }
+  })
+
+  await t.test('wake starts one voice session, pauses during saving, and starts a separate next session', async () => {
+    const ui = await setup({ wakeSupported: true, openNewSession: false })
+    try {
+      await waitFor(() => ui.recognitions.some(item => item.active))
+      const wake = ui.recognitions.at(-1)
+      await act(async () => { wake.result('普通の会話'); wake.result('Hey Whisper', false) })
+      assert.equal(ui.calls.filter(call => call.options.method === 'POST').length, 0)
+      await act(async () => { wake.result('ヘイウィスパー'); wake.result('Hey Whisper') })
+      await waitFor(() => recorders[0]?.state === 'recording')
+      assert.equal(wake.active, false)
+      assert.equal(ui.calls.filter(call => call.path === '/api/sessions' && call.options.method === 'POST').length, 1)
+      ui.endOnNextReply()
+      await act(async () => { recorders[0].stop() })
+      await waitFor(() => document.querySelector('.saving-screen'))
+      assert.equal(ui.recognitions.some(item => item.active), false)
+      ui.finishSaving()
+      await waitFor(() => ui.recognitions.some(item => item.active))
+      assert.match(document.querySelector('.session-boundary').textContent, /終了/)
+      await act(async () => { ui.recognitions.at(-1).result('Hey Whisper') })
+      await waitFor(() => recorders[1]?.state === 'recording')
+      assert.equal(document.querySelector('.session-boundary'), null)
+      const starts = ui.calls.filter(call => call.path.endsWith('/start'))
+      assert.equal(starts.length, 2)
+      assert.notEqual(starts[0].path, starts[1].path)
+      await ui.type('次のインタビューの回答')
+      await click(document.querySelector('.send'))
+      await waitFor(() => ui.calls.some(call => call.path === '/api/sessions/test-2/messages'))
+    } finally { await ui.dispose() }
+  })
+
+  await t.test('manual end waits for the entire closing playback before showing saving', async () => {
+    const ui = await setup({ manualSpeech: true })
+    try {
+      await act(async () => { ui.spoken[0].onend() })
+      await click(document.querySelector('.handsfree-button'))
+      await waitFor(() => recorders[0]?.state === 'recording')
+      await click(document.querySelector('.interview-header button'))
+      await waitFor(() => ui.spoken.length === 3)
+      assert.equal(recorders[0].state, 'inactive')
+      assert.equal(ui.calls.filter(call => call.path === '/api/speech/transcribe').length, 0)
+      assert.equal(ui.spoken.slice(1).map(item => item.text).join(''), 'ありがとうございました。これでインタビューを終了します。')
+      await waitFor(() => document.querySelector('.assistant-bubble p')?.textContent === 'ありがとうございました。これでインタビューを終了します。')
+      assert.equal(document.querySelector('.saving-screen'), null)
+      await act(async () => { ui.spoken[1].onend() })
+      assert.equal(document.querySelector('.saving-screen'), null)
+      await act(async () => { ui.spoken[2].onend() })
+      await waitFor(() => document.querySelector('.saving-screen'))
+    } finally { await ui.dispose() }
+  })
+
+  await t.test('wake permission failure offers retry and preserves manual start', async () => {
+    const ui = await setup({ wakeSupported: true, openNewSession: false })
+    try {
+      await waitFor(() => ui.recognitions.some(item => item.active))
+      await act(async () => { ui.recognitions.at(-1).onerror({ error: 'not-allowed' }) })
+      assert.match(document.querySelector('.composer').textContent, /マイクの許可/)
+      assert.equal(document.querySelector('.start-interview').disabled, false)
+      const retry = [...document.querySelectorAll('.composer button')].find(button => button.textContent === '音声待受を再開')
+      await click(retry)
+      await waitFor(() => ui.recognitions.at(-1).active)
+      const wake = ui.recognitions.at(-1)
+      await act(async () => { wake.onend() })
+      await waitFor(() => wake.starts === 2)
+      await click(document.querySelector('.start-interview'))
+      await waitFor(() => document.querySelector('textarea'))
+      assert.equal(wake.active, false)
+      assert.equal(ui.micCalls, 0)
+    } finally { await ui.dispose() }
+  })
 
   await t.test('text submission needs no microphone and preserves the answer', async () => {
     const ui = await setup()
@@ -292,7 +511,7 @@ test('text and voice input in the interview screen', async t => {
     } finally { await ui.dispose() }
   })
 
-  await t.test('automatic completion waits for recording to finish before returning home', async () => {
+  await t.test('automatic completion shows the closing message before saving and returns to standby', async () => {
     const ui = await setup()
     try {
       ui.endOnNextReply()
@@ -300,6 +519,7 @@ test('text and voice input in the interview screen', async t => {
       await waitFor(() => recorders[0]?.state === 'recording')
       await click(document.querySelector('.handsfree-button'))
       await waitFor(() => document.querySelector('.saving-screen'))
+      assert.match(document.querySelector('.assistant-bubble').textContent, /ありがとうございました/)
       assert.match(document.querySelector('.saving-screen').textContent, /インタビューの内容を記録しています/)
       assert.equal(document.querySelector('.new-session').disabled, true)
       assert.equal(recorders[0].state, 'inactive')
@@ -311,21 +531,22 @@ test('text and voice input in the interview screen', async t => {
       await click(document.querySelector('.new-session'))
       assert.equal(ui.calls.filter(call => call.path === '/api/sessions' && call.options.method === 'POST').length, createCount)
       ui.finishSaving()
-      await waitFor(() => document.querySelector('.empty-state'), 200)
-      assert.equal(document.querySelector('.interview-layout'), null)
+      await waitFor(() => document.querySelector('.standby:not(:has(.saving-screen))'), 200)
+      assert.ok(document.querySelector('.interview-layout'))
       assert.equal(document.querySelector('.new-session').disabled, false)
     } finally { await ui.dispose() }
   })
 
-  await t.test('manual completion returns home after a fallback record is saved', async () => {
+  await t.test('manual completion returns to standby after a fallback record is saved', async () => {
     const ui = await setup()
     try {
       await click(document.querySelector('.interview-header button'))
       await waitFor(() => document.querySelector('.saving-screen'))
+      assert.match(document.querySelector('.assistant-bubble').textContent, /ありがとうございました/)
       assert.equal(document.querySelector('.new-session').disabled, true)
       assert.equal(ui.calls.filter(call => call.path.endsWith('/end')).length, 1)
       ui.finishSaving('fallback')
-      await waitFor(() => document.querySelector('.empty-state'), 200)
+      await waitFor(() => document.querySelector('.standby:not(:has(.saving-screen))'), 200)
     } finally { await ui.dispose() }
   })
 
@@ -336,7 +557,7 @@ test('text and voice input in the interview screen', async t => {
       assert.ok(document.querySelector('.saving-screen'))
       assert.equal(document.querySelector('.new-session').disabled, true)
       ui.finishSaving()
-      await waitFor(() => document.querySelector('.empty-state'), 200)
+      await waitFor(() => document.querySelector('.standby:not(:has(.saving-screen))'), 200)
       assert.equal(document.querySelector('.new-session').disabled, false)
     } finally { await ui.dispose() }
   })
@@ -350,7 +571,7 @@ test('text and voice input in the interview screen', async t => {
       assert.equal(document.querySelector('.new-session').disabled, true)
       ui.setDetailResponse(async () => Response.json({ memory: { status: 'ready' } }))
       ui.finishSaving()
-      await waitFor(() => document.querySelector('.empty-state'), 200)
+      await waitFor(() => document.querySelector('.standby:not(:has(.saving-screen))'), 200)
     } finally { await ui.dispose() }
   })
 
@@ -362,11 +583,11 @@ test('text and voice input in the interview screen', async t => {
       ui.setCreateResponse(() => new Promise(resolve => { resolveCreate = resolve }))
       ui.setStartResponse(() => new Promise(resolve => { resolveStart = resolve }))
       const sidebarButton = document.querySelector('.new-session')
-      const homeButton = document.querySelector('.empty-state button')
+      const homeButton = document.querySelector('.start-interview')
       await act(async () => { sidebarButton.click(); homeButton.click(); sidebarButton.click() })
       assert.equal(ui.calls.filter(call => call.path === '/api/sessions' && call.options.method === 'POST').length, 1)
       assert.equal(sidebarButton.disabled, true)
-      assert.match(document.querySelector('.workspace [role="status"]').textContent, /準備しています/)
+      assert.match(document.querySelector('.composer [role="status"]').textContent, /準備しています/)
       await act(async () => { resolveCreate(Response.json({ session: { id: 'test' } })) })
       await waitFor(() => Boolean(resolveStart))
       await click(sidebarButton)
@@ -397,25 +618,25 @@ test('text and voice input in the interview screen', async t => {
     const ended = { id: 'test', language: 'ja', status: 'ended', title: '終了済み' }
     const ui = await setup({ status: 'ended', sessions: [ended], openNewSession: false })
     try {
-      await waitFor(() => document.querySelector('.empty-state'))
-      assert.equal(document.querySelector('.interview-layout'), null)
+      await waitFor(() => document.querySelector('.standby:not(:has(.saving-screen))'))
+      assert.ok(document.querySelector('.interview-layout'))
       assert.equal(ui.calls.filter(call => call.path === '/api/sessions/test').length, 0)
       await click(document.querySelector('.sidebar nav button'))
       await waitFor(() => document.querySelector('.interview-header button'))
-      assert.equal(document.querySelector('.interview-header button').textContent, 'ホームに戻る')
+      assert.equal(document.querySelector('.interview-header button').textContent, '待受に戻る')
       assert.equal(document.querySelector('.speech-status').textContent, 'Ended')
       await click(document.querySelector('.interview-header button'))
-      await waitFor(() => document.querySelector('.empty-state'))
+      await waitFor(() => document.querySelector('.standby:not(:has(.saving-screen))'))
     } finally { await ui.dispose() }
   })
 
-  await t.test('session loading failure offers retry and a way home', async () => {
+  await t.test('session loading failure offers retry and a way back to standby', async () => {
     const ui = await setup({ loadError: true })
     try {
       assert.match(document.querySelector('[role="alert"]').textContent, /記録を読み込めませんでした/)
       assert.ok([...document.querySelectorAll('.loading button')].some(button => button.textContent === '再試行'))
-      await click([...document.querySelectorAll('.loading button')].find(button => button.textContent === 'ホームに戻る'))
-      await waitFor(() => document.querySelector('.empty-state'))
+      await click([...document.querySelectorAll('.loading button')].find(button => button.textContent === '待受に戻る'))
+      await waitFor(() => document.querySelector('.standby:not(:has(.saving-screen))'))
     } finally { await ui.dispose() }
   })
 

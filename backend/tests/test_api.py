@@ -227,6 +227,9 @@ class APITests(DatabaseTestCase):
         self.login()
         for text, expected, ended in [
             ("塩酸を確認。オーバー。", "薬品Aを確認。", True),
+            ("塩酸を確認。どうぞ。", "薬品Aを確認。", True),
+            ("どうぞ", "", True),
+            ("どうぞよろしくお願いします。", "どうぞよろしくお願いします。", False),
             ("inspection complete, over!", "inspection complete,", True),
             ("coverage is sufficient", "coverage is sufficient", False),
             ("オーバー", "", True),

@@ -38,3 +38,13 @@ test('encodes rolling microphone samples as a PCM WAV for the server', async () 
   assert.equal(view.getInt16(44, true), -32768)
   assert.equal(view.getInt16(48, true), 32767)
 })
+
+test('wake word accepts Japanese and English calls while ignoring ordinary conversation', async () => {
+  const { isWakeWord } = await import('../src/wakeWord.ts')
+  for (const word of ['ヘイウィスパー', 'ヘイ、ウィスパー。', 'ヘイ ウイスパー', 'Hey Whisper!', 'heywhisper', 'へい、うぃすぱー']) {
+    assert.equal(isWakeWord(word), true, word)
+  }
+  for (const words of ['', 'whisper', 'hey', '今日は晴れです', 'ヘイウィスパーと言いました', 'They whisper']) {
+    assert.equal(isWakeWord(words), false, words)
+  }
+})

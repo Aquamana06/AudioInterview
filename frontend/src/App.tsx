@@ -1,9 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import QRCode from 'qrcode'
 import './App.css'
 import alpacaBackground from './assets/interview-alpaca-background.png'
-import { api } from './api'
+import { api, ApiError } from './api'
 import { pcmToWav, transcribeAudio } from './speech'
+import { isWakeWord, wakeRecognitionConstructor } from './wakeWord'
+import { clearWorkspace, readWorkspace, saveWorkspace } from './workspace'
 
 type Language = 'ja' | 'en' | 'de'
 type Role = 'admin' | 'operator'
@@ -139,39 +141,51 @@ function AdminPanel({ onOpenSession }: { onOpenSession: (id: string) => void }) 
   </div>
 }
 
-function SavingInterview({ sessionId, onFinished }: { sessionId: string; onFinished: () => Promise<void> }) {
+function SavingInterview({ sessionId, onFinished, onAuthRequired }: { sessionId: string; onFinished: () => Promise<void>; onAuthRequired: () => void }) {
   const [error, setError] = useState('')
+  const [retry, setRetry] = useState(0)
   useEffect(() => {
     let cancelled = false
     let timer: number | undefined
+    const controller = new AbortController()
     async function check() {
       try {
-        const result = await api<SessionPayload>(`/api/sessions/${sessionId}`)
+        const result = await api<SessionPayload>(`/api/sessions/${sessionId}`, { signal: controller.signal }, 10_000)
         if (cancelled) return
         if (result.memory.status === 'ready' || result.memory.status === 'fallback') {
           await onFinished()
+          if (!cancelled) timer = window.setTimeout(() => { void check() }, 1000)
           return
         }
         setError('')
-      } catch {
+      } catch (caught) {
         if (cancelled) return
-        setError('記録状況を確認できませんでした。接続を確認しながら、もうしばらくお待ちください')
+        if (caught instanceof ApiError && caught.status === 401) { onAuthRequired(); return }
+        if (caught instanceof ApiError && caught.status === 404) {
+          try {
+            await onFinished()
+            if (!cancelled) timer = window.setTimeout(() => { void check() }, 1000)
+            return
+          }
+          catch { if (cancelled) return }
+        }
+        setError('記録状況を確認できませんでした。保存済みの回答は保持されています。接続を確認して再確認してください。')
       }
       if (!cancelled) timer = window.setTimeout(() => { void check() }, 1000)
     }
     void check()
-    return () => { cancelled = true; window.clearTimeout(timer) }
-  }, [sessionId, onFinished])
+    return () => { cancelled = true; controller.abort(); window.clearTimeout(timer) }
+  }, [sessionId, onFinished, onAuthRequired, retry])
 
   return <div className="loading saving-screen" role="status" aria-live="polite" aria-busy="true">
     <div className="thinking-dots" aria-hidden="true"><i /><i /><i /></div>
     <h2>インタビューの内容を記録しています</h2>
-    <p>記録が完了すると、自動でホームに戻ります。</p>
-    {error && <p className="error-message">{error}</p>}
+    <p>記録が完了すると、次のインタビューを開始できます。</p>
+    {error && <><p className="error-message">{error}</p><button onClick={() => setRetry(value => value + 1)}>記録状況を再確認</button></>}
   </div>
 }
 
-function Interview({ sessionId, onSessionsChanged, onExit, onCompleted }: { sessionId: string; onSessionsChanged: () => void; onExit: () => void; onCompleted: (sessionId: string) => void }) {
+function Interview({ sessionId, voiceStart, onVoiceChange, onSessionsChanged, onExit, onCompleted }: { sessionId: string; voiceStart: boolean; onVoiceChange: (enabled: boolean) => void; onSessionsChanged: () => void; onExit: () => void; onCompleted: (sessionId: string, closing: string) => void }) {
   const [payload, setPayload] = useState<SessionPayload | null>(null)
   const [text, setText] = useState('')
   const [displayOverrides, setDisplayOverrides] = useState<Record<string, string>>({})
@@ -179,16 +193,19 @@ function Interview({ sessionId, onSessionsChanged, onExit, onCompleted }: { sess
   const [liveTranscript, setLiveTranscript] = useState('')
   const [error, setError] = useState('')
   const [editingId, setEditingId] = useState<string | null>(null)
-  const [handsFree, setHandsFree] = useState(false)
+  const [handsFree, setHandsFree] = useState(voiceStart)
+  useEffect(() => { onVoiceChange(handsFree) }, [handsFree, onVoiceChange])
   const [isRecording, setIsRecording] = useState(false)
   const [isBusy, setIsBusy] = useState(false)
   const [isFinalizing, setIsFinalizing] = useState(false)
   const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null)
+  const [isClosing, setIsClosing] = useState(false)
+  const completionSentRef = useRef(false)
   const recorderRef = useRef<MediaRecorder | null>(null)
   const recordingRef = useRef(false)
   const streamRef = useRef<MediaStream | null>(null)
   const chunksRef = useRef<Blob[]>([])
-  const handsFreeRef = useRef(false)
+  const handsFreeRef = useRef(voiceStart)
   const finalizingRef = useRef(false)
   const startingRecordingRef = useRef<number | null>(null)
   const transcriptionSequenceRef = useRef(0)
@@ -208,8 +225,14 @@ function Interview({ sessionId, onSessionsChanged, onExit, onCompleted }: { sess
   } | null>(null)
 
   const speak = useCallback((value: string, language: Language) => {
+    if (!globalThis.speechSynthesis || !globalThis.SpeechSynthesisUtterance) {
+      setError('読み上げに対応していないため、画面のメッセージをご確認ください')
+      setSpeechState('ready')
+      return
+    }
     const generation = ++speechGenerationRef.current
     speechSynthesis.cancel()
+    setSpeechState('speaking')
     const sentences = value.match(/[^。！？.!?]+[。！？.!?]?/g)?.map(part => part.trim()).filter(Boolean)
     const parts = sentences?.length ? sentences : [value]
     parts.forEach((part, index) => {
@@ -224,7 +247,7 @@ function Interview({ sessionId, onSessionsChanged, onExit, onCompleted }: { sess
         if (generation !== speechGenerationRef.current) return
         speechGenerationRef.current += 1
         speechSynthesis.cancel()
-        setError('質問の読み上げに失敗しました。画面の質問を確認して回答してください')
+        setError('読み上げに失敗しました。画面のメッセージをご確認ください')
         setSpeechState('ready')
       }
       speechSynthesis.speak(utterance)
@@ -234,16 +257,22 @@ function Interview({ sessionId, onSessionsChanged, onExit, onCompleted }: { sess
   const load = useCallback(async () => {
     try {
       setError('')
-      const data = await api<SessionPayload>(`/api/sessions/${sessionId}`); setPayload(data)
+      const data = await api<SessionPayload>(`/api/sessions/${sessionId}`, undefined, 10_000); setPayload(data)
     } catch (caught) { setError(caught instanceof Error ? caught.message : 'セッションを読み込めませんでした') }
   }, [sessionId])
   useEffect(() => { void load() }, [load])
   useEffect(() => {
-    if (payload?.session.status !== 'ended') return
+    if (payload?.session.status !== 'ended' || isClosing) return
     switchToTextInput()
     setStreamingMessageId(null)
     setSpeechState('ended')
-  }, [payload?.session.status])
+  }, [payload?.session.status, isClosing])
+  useEffect(() => {
+    if (!isClosing || !payload || streamingMessageId || isBusy || isFinalizing || speechState === 'speaking' || completionSentRef.current) return
+    completionSentRef.current = true
+    const closing = [...payload.messages].reverse().find(message => message.role === 'system')?.content ?? ''
+    onCompleted(payload.session.id, closing)
+  }, [isClosing, payload, streamingMessageId, isBusy, isFinalizing, speechState, onCompleted])
   useEffect(() => {
     if (!payload || initialSpeechStartedRef.current || payload.session.status === 'ended') return
     const opening = payload.messages.length === 1 && payload.messages[0].role === 'system' ? payload.messages[0] : null
@@ -472,7 +501,7 @@ function Interview({ sessionId, onSessionsChanged, onExit, onCompleted }: { sess
         : await api<{ normalizedText: string; maskedText: string }>('/api/local/mask-text', jsonInit('POST', { text: content }))
       const result = await api<SessionPayload>(`/api/sessions/${payload.session.id}/messages`, jsonInit('POST', { maskedText: prepared.maskedText, inputMode, editMessageId: editingId || undefined }))
       if (result.session.status === 'ended') {
-        onCompleted(result.session.id)
+        presentClosing(result)
         return
       }
       const newUser = result.messages.find(message => message.role === 'user' && !beforeIds.has(message.id))
@@ -496,19 +525,32 @@ function Interview({ sessionId, onSessionsChanged, onExit, onCompleted }: { sess
   }
 
   async function endInterview() {
-    if (!payload || busyRef.current || !confirm('このインタビューを終了しますか？')) return
+    if (!payload || busyRef.current || isClosing) return
+    switchToTextInput()
     busyRef.current = true; setIsBusy(true); setError('')
     try {
       const result = await api<SessionPayload>(`/api/sessions/${payload.session.id}/end`, { method: 'POST' })
-      onCompleted(result.session.id)
+      presentClosing(result)
     } catch (caught) { setError(caught instanceof Error ? caught.message : '終了処理に失敗しました') }
     finally { busyRef.current = false; setIsBusy(false) }
+  }
+
+  function presentClosing(result: SessionPayload) {
+    switchToTextInput()
+    setIsClosing(true)
+    setPayload(result); setText(''); setEditingId(null)
+    const ending = [...result.messages].reverse().find(message => message.role === 'system')
+    if (ending) {
+      setDisplayOverrides(current => ({ ...current, [ending.id]: '' }))
+      pendingSpeechRef.current = { content: ending.content, language: result.session.language }
+      setStreamingMessageId(ending.id)
+    }
   }
 
   if (!payload) return <div className="loading">{error ? <>
     <p role="alert">{error}</p>
     <button onClick={() => void load()}>再試行</button>
-    <button onClick={onExit}>ホームに戻る</button>
+    <button onClick={onExit}>待受に戻る</button>
   </> : 'セッションを読み込んでいます…'}</div>
   const latestQuestion = [...payload.messages].reverse().find(message => message.role === 'system')
   const isThinking = speechState === 'thinking' && !streamingMessageId
@@ -516,18 +558,18 @@ function Interview({ sessionId, onSessionsChanged, onExit, onCompleted }: { sess
   const userIsActive = speechState === 'recording' || speechState === 'transcribing'
   return <section className={`interview-layout ${interviewerIsActive ? 'interviewer-active' : ''} ${userIsActive ? 'user-active' : ''}`}>
     <div className="interview-scene alpaca-background" style={{ backgroundImage: `url(${alpacaBackground})` }} aria-hidden="true"><div className="scene-shade" /></div>
-    <header className="interview-header"><div className={`speech-status ${speechState}`}><i />{isThinking ? 'インタビュアーが考え中…' : labels[speechState]}</div><button className="danger-outline" onClick={payload.session.status === 'ended' ? onExit : endInterview} disabled={payload.session.status !== 'ended' && isBusy}>{payload.session.status === 'ended' ? 'ホームに戻る' : '終了'}</button></header>
+    <header className="interview-header"><div className={`speech-status ${speechState}`}><i />{isClosing ? '終了のご挨拶' : isThinking ? 'インタビュアーが考え中…' : labels[speechState]}</div><button className="danger-outline" onClick={payload.session.status === 'ended' ? onExit : endInterview} disabled={isClosing || isBusy}>{payload.session.status === 'ended' ? '待受に戻る' : 'インタビューを終了'}</button></header>
     <div className="interview-stage">
       <div className={`assistant-bubble ${isThinking ? 'thinking' : ''}`} aria-live="polite">
         <span>interviewer</span>
-        {isThinking ? <div className="thinking-dots"><i /><i /><i /></div> : <p>{latestQuestion ? (displayOverrides[latestQuestion.id] || latestQuestion.content) : 'よろしくお願いします。'}</p>}
+        {isThinking ? <div className="thinking-dots"><i /><i /><i /></div> : <p>{latestQuestion ? (displayOverrides[latestQuestion.id] ?? latestQuestion.content) : 'よろしくお願いします。'}</p>}
       </div>
     </div>
     {liveTranscript && <div className="live-strip"><span><b>Whisper</b>{liveTranscript}</span></div>}
     <footer className="composer">
       {editingId && <div className="editing-banner">過去の回答を編集中。この時点以降を再生成します。<button onClick={() => { setEditingId(null); setText('') }}>取消</button></div>}
       {error && <p className="error-message composer-error">{error}</p>}
-      <textarea id="answer" aria-label="テキストで回答" value={text} onChange={event => setText(event.target.value)} onFocus={switchToTextInput} onKeyDown={event => {
+      <textarea id="answer" aria-label="テキストで回答" value={text} onChange={event => setText(event.target.value)} onFocus={() => { if (!isClosing) switchToTextInput() }} onKeyDown={event => {
         const nativeEvent = event.nativeEvent as KeyboardEvent
         if (event.key === 'Enter' && !event.shiftKey && !nativeEvent.isComposing && nativeEvent.keyCode !== 229) { event.preventDefault(); void sendText() }
       }} placeholder={payload.session.status === 'ended' ? 'このインタビューは終了しました' : '回答を入力（変換中はEnterで確定／確定後Enterで送信）'} disabled={payload.session.status === 'ended' || isBusy} />
@@ -535,6 +577,75 @@ function Interview({ sessionId, onSessionsChanged, onExit, onCompleted }: { sess
         <button className={`handsfree-button ${handsFree ? 'active' : ''}`} onClick={toggleHandsFree} disabled={payload.session.status === 'ended' || isBusy}>{handsFree ? (isRecording ? '録音中（停止して送信）' : '自動録音中（停止）') : '音声で回答する'}</button>
         <button className="primary send" onClick={() => void sendText()} disabled={!text.trim() || payload.session.status === 'ended' || isBusy}>{isBusy ? '送信中…' : '送信'}</button>
       </div>
+      {handsFree && <p className="voice-help">回答の最後に「どうぞ」または「オーバー」と話してください。</p>}
+    </footer>
+  </section>
+}
+
+function InterviewStandby({ disabled, starting, savingSessionId, closing, language, onStart, onFinished, onAuthRequired, controls }: {
+  disabled: boolean; starting: boolean; savingSessionId: string | null; closing: string; language: Language
+  onStart: (voice?: boolean) => void; onFinished: () => Promise<void>
+  controls: ReactNode
+  onAuthRequired: () => void
+}) {
+  const [wakeStatus, setWakeStatus] = useState('呼びかけを待っています')
+  const [retry, setRetry] = useState(0)
+  const [wakeFailed, setWakeFailed] = useState(false)
+  const startRef = useRef(onStart)
+  startRef.current = onStart
+  useEffect(() => {
+    if (disabled) return
+    const Recognition = wakeRecognitionConstructor()
+    if (!Recognition) { setWakeStatus('音声での開始はこのブラウザに未対応です。開始ボタンをご利用ください。'); return }
+    const recognition = new Recognition()
+    let stopped = false
+    let timer: number | undefined
+    recognition.lang = locale[language]
+    recognition.continuous = true
+    recognition.interimResults = false
+    function start() {
+      if (stopped) return
+      try { recognition.start(); setWakeFailed(false); setWakeStatus('「ヘイウィスパー」と呼びかけてください') }
+      catch { stopped = true; setWakeFailed(true); setWakeStatus('音声待受を開始できませんでした。音声待受を再開するか、開始ボタンをご利用ください。') }
+    }
+    recognition.onresult = event => {
+      if (stopped) return
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        if (event.results[i].isFinal && isWakeWord(event.results[i][0].transcript)) {
+          stopped = true
+          recognition.abort()
+          startRef.current(true)
+          return
+        }
+      }
+    }
+    recognition.onerror = event => {
+      if (stopped || event.error === 'no-speech') return
+      stopped = true
+      recognition.abort()
+      setWakeFailed(true)
+      setWakeStatus(event.error === 'not-allowed' || event.error === 'service-not-allowed'
+        ? '音声待受にはマイクの許可が必要です。許可後に音声待受を再開できます。'
+        : '音声待受が停止しました。音声待受を再開するか、開始ボタンをご利用ください。')
+    }
+    recognition.onend = () => { if (!stopped) timer = window.setTimeout(start, 500) }
+    start()
+    return () => { stopped = true; window.clearTimeout(timer); recognition.onresult = null; recognition.onerror = null; recognition.onend = null; recognition.abort() }
+  }, [disabled, language, retry])
+
+  return <section className="interview-layout standby">
+    <div className="interview-scene alpaca-background" style={{ backgroundImage: `url(${alpacaBackground})` }} aria-hidden="true" />
+    <header className="interview-header"><div className="speech-status"><i />{savingSessionId ? '記録中' : starting ? '準備中' : '開始待ち'}</div></header>
+    <div className="interview-stage">
+      <div className="assistant-bubble" aria-live="polite"><span>interviewer</span><p>{closing || 'こんにちは。「ヘイウィスパー」と呼びかけるか、開始ボタンを押してください。'}</p></div>
+      {closing && <p className="session-boundary">このインタビューは終了しました</p>}
+      {savingSessionId && <SavingInterview sessionId={savingSessionId} onFinished={onFinished} onAuthRequired={onAuthRequired} />}
+    </div>
+    <footer className="composer">
+      <p className="voice-help" role="status">{starting ? 'インタビューを準備しています…' : savingSessionId ? '記録が完了するまでお待ちください。' : disabled ? '準備しています…' : wakeStatus}</p>
+      {wakeFailed && !disabled && <button onClick={() => setRetry(value => value + 1)}>音声待受を再開</button>}
+      <button className="primary start-interview" disabled={disabled} onClick={() => onStart(false)}>インタビューを開始</button>
+      {controls}
     </footer>
   </section>
 }
@@ -546,30 +657,41 @@ function App() {
   const [view, setView] = useState<'interview' | 'admin'>('interview')
   const [language, setLanguage] = useState<Language>('ja')
   const [authChecked, setAuthChecked] = useState(false)
+  const [authError, setAuthError] = useState('')
+  const [authAttempt, setAuthAttempt] = useState(0)
+  const [sessionsError, setSessionsError] = useState('')
   const [sessionsLoaded, setSessionsLoaded] = useState(false)
   const [isStarting, setIsStarting] = useState(false)
   const [savingSessionId, setSavingSessionId] = useState<string | null>(null)
   const [startError, setStartError] = useState('')
+  const [closingMessage, setClosingMessage] = useState('')
+  const [voiceStart, setVoiceStart] = useState(false)
   const initialSessionResolved = useRef(false)
   const startingSessionRef = useRef(false)
   const pendingStartRef = useRef<string | null>(null)
+  const restoredSessionRef = useRef<string | null>(null)
+
+  const checkAuthentication = useCallback(() => { setAuthChecked(false); setAuthError(''); setAuthAttempt(value => value + 1) }, [])
 
   const loadSessions = useCallback(async () => {
     try {
-      const result = await api<{ sessions: Session[] }>('/api/sessions')
+      const result = await api<{ sessions: Session[] }>('/api/sessions', undefined, 10_000)
       setSessions(result.sessions)
+      setSessionsError(''); setSessionsLoaded(true)
       if (!initialSessionResolved.current) {
         initialSessionResolved.current = true
         const pending = result.sessions.find(item => item.account_id === account?.id && item.status === 'ended' && item.memory_status === 'pending')
         if (pending) setSavingSessionId(pending.id)
-        else if (result.sessions[0]?.status === 'running') setSelectedId(result.sessions[0].id)
+        if (restoredSessionRef.current && !result.sessions.some(item => item.id === restoredSessionRef.current)) setSelectedId(null)
       }
       return result.sessions
-    } catch { /* login handles auth */ }
-    finally { setSessionsLoaded(true) }
-  }, [account?.id])
+    } catch (caught) {
+      if (caught instanceof ApiError && caught.status === 401) checkAuthentication()
+      else setSessionsError('セッション一覧を確認できませんでした。接続を確認して再試行してください。')
+    }
+  }, [account?.id, checkAuthentication])
   const exitInterview = useCallback(() => { setSelectedId(null); setView('interview') }, [])
-  const completeInterview = useCallback((id: string) => { setSavingSessionId(id) }, [])
+  const completeInterview = useCallback((id: string, closing: string) => { setClosingMessage(closing); setSavingSessionId(id); setSelectedId(null) }, [])
   const finishSaving = useCallback(async () => {
     const updated = await loadSessions()
     // Refresh before enabling creation, including any older pending session.
@@ -578,23 +700,52 @@ function App() {
     setSavingSessionId(pending?.id ?? null)
     if (!pending) exitInterview()
   }, [account?.id, loadSessions, exitInterview])
-  useEffect(() => { api<{ account: Account }>('/api/me').then(result => { setAccount(result.account); setAuthChecked(true) }).catch(() => setAuthChecked(true)) }, [])
+  const acceptAccount = useCallback((value: Account, restore = false) => {
+    const saved = restore ? readWorkspace(value.id) : null
+    initialSessionResolved.current = false
+    restoredSessionRef.current = saved?.sessionId ?? null
+    pendingStartRef.current = saved?.pendingStartId ?? null
+    setAccount(value)
+    setSelectedId(saved?.sessionId ?? null)
+    setVoiceStart(saved?.voice ?? false)
+    setLanguage(saved?.language ?? 'ja')
+    setSessionsLoaded(false); setSavingSessionId(null); setSessionsError('')
+    setView(value.role === 'admin' ? saved?.view ?? 'admin' : 'interview')
+    setAuthError('')
+    setAuthChecked(true)
+  }, [])
+  useEffect(() => {
+    const controller = new AbortController()
+    api<{ account: Account }>('/api/me', { signal: controller.signal }, 10_000)
+      .then(result => { if (!controller.signal.aborted) acceptAccount(result.account, true) })
+      .catch(caught => {
+        if (controller.signal.aborted) return
+        if (caught instanceof ApiError && caught.status === 401) { setAccount(null); setAuthChecked(true) }
+        else setAuthError('ログイン状態を確認できませんでした。サーバーへの接続を確認して再試行してください。')
+      })
+    return () => controller.abort()
+  }, [acceptAccount, authAttempt])
   useEffect(() => { if (account) void loadSessions() }, [account, loadSessions])
-  useEffect(() => { if (account?.role === 'admin') setView('admin') }, [account])
+  useEffect(() => {
+    if (!account || !sessionsLoaded) return
+    saveWorkspace(account.id, { sessionId: selectedId, view, language, voice: voiceStart, pendingStartId: pendingStartRef.current })
+  }, [account, sessionsLoaded, selectedId, view, language, voiceStart, isStarting])
 
-  async function createSession() {
-    if (startingSessionRef.current || savingSessionId || !sessionsLoaded) return
+  async function createSession(voice = false) {
+    if (!account || startingSessionRef.current || savingSessionId || !sessionsLoaded || (selectedId && sessions.some(item => item.id === selectedId && item.status === 'running'))) return
     startingSessionRef.current = true
+    setVoiceStart(voice)
     setIsStarting(true); setStartError('')
     try {
       if (!pendingStartRef.current) {
         const result = await api<SessionPayload>('/api/sessions', jsonInit('POST', { language }))
         pendingStartRef.current = result.session.id
+        saveWorkspace(account.id, { sessionId: selectedId, view, language, voice, pendingStartId: result.session.id })
       }
       const id = pendingStartRef.current
       await api(`/api/sessions/${id}/start`, { method: 'POST' })
       pendingStartRef.current = null
-      setSelectedId(id); setView('interview')
+      setClosingMessage(''); setSelectedId(id); setView('interview')
       await loadSessions()
     } catch (caught) {
       setStartError(caught instanceof Error ? caught.message : 'インタビューを開始できませんでした')
@@ -603,18 +754,25 @@ function App() {
       setIsStarting(false)
     }
   }
-  async function signOut() { await api('/api/auth/logout', { method: 'POST' }); setAccount(null); setSessions([]); setSelectedId(null); setSavingSessionId(null); setSessionsLoaded(false); setStartError(''); pendingStartRef.current = null; initialSessionResolved.current = false }
-  if (!authChecked) return <div className="loading">AudioInterviewを準備しています…</div>
-  if (!account) return <Login onLogin={value => { setAccount(value); setView(value.role === 'admin' ? 'admin' : 'interview'); setAuthChecked(true) }} />
+  async function signOut() { await api('/api/auth/logout', { method: 'POST' }); if (account) clearWorkspace(account.id); setAccount(null); setSessions([]); setSelectedId(null); setSavingSessionId(null); setClosingMessage(''); setVoiceStart(false); setSessionsLoaded(false); setStartError(''); pendingStartRef.current = null; initialSessionResolved.current = false }
+  if (!authChecked) return <div className="loading" role="status">{authError ? <><p role="alert">{authError}</p><button onClick={checkAuthentication}>接続を再確認</button></> : 'AudioInterviewを準備しています…'}</div>
+  if (!account) return <Login onLogin={acceptAccount} />
 
-  const inInterview = view === 'interview' && Boolean(selectedId)
+  const inInterview = view === 'interview'
   const navigationLocked = isStarting || Boolean(savingSessionId) || !sessionsLoaded
+  const standbyControls = <details className="standby-settings"><summary>設定・履歴</summary>
+    <p>{account.displayName}</p>
+    <label>言語<select aria-label="インタビューの言語" value={language} onChange={event => setLanguage(event.target.value as Language)} disabled={navigationLocked}>{Object.entries(languageLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+    <label>セッション履歴<select aria-label="セッション履歴" value="" disabled={navigationLocked} onChange={event => { if (event.target.value) { setVoiceStart(false); setSelectedId(event.target.value); setView('interview') } }}><option value="">履歴を選択</option>{sessions.map(item => <option key={item.id} value={item.id}>{item.title} · {item.status}</option>)}</select></label>
+    {account.role === 'admin' && <button onClick={() => setView('admin')} disabled={navigationLocked}>ID発行・管理画面</button>}
+    <button onClick={signOut} disabled={navigationLocked}>ログアウト</button>
+  </details>
   return <div className={`app-shell ${inInterview ? 'interview-app' : ''}`}>
-    <aside className="sidebar"><div className="sidebar-brand"><span>AI</span><strong>AudioInterview</strong></div>{account.role === 'admin' && <button className={`admin-entry ${view === 'admin' ? 'selected' : ''}`} onClick={() => setView('admin')} disabled={navigationLocked}>⚙ ID発行・管理画面</button>}<button className="new-session" onClick={createSession} disabled={navigationLocked}>{isStarting ? 'インタビューを準備中…' : savingSessionId ? 'インタビューを記録中…' : '＋ 新しいインタビュー'}</button><label className="language-picker">言語<select value={language} onChange={event => setLanguage(event.target.value as Language)} disabled={navigationLocked}>{Object.entries(languageLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+    <aside className="sidebar"><div className="sidebar-brand"><span>AI</span><strong>AudioInterview</strong></div><button onClick={() => setView('interview')} disabled={navigationLocked}>インタビュー画面</button>{account.role === 'admin' && <button className={`admin-entry ${view === 'admin' ? 'selected' : ''}`} onClick={() => setView('admin')} disabled={navigationLocked}>⚙ ID発行・管理画面</button>}<button className="new-session" onClick={() => { setView('interview'); void createSession() }} disabled={navigationLocked || Boolean(selectedId && sessions.some(item => item.id === selectedId && item.status === 'running'))}>{isStarting ? 'インタビューを準備中…' : savingSessionId ? 'インタビューを記録中…' : '＋ 新しいインタビュー'}</button><label className="language-picker">言語<select value={language} onChange={event => setLanguage(event.target.value as Language)} disabled={navigationLocked}>{Object.entries(languageLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
       <nav><p>セッション</p>{sessions.map(item => <button key={item.id} className={selectedId === item.id && view === 'interview' ? 'selected' : ''} onClick={() => { setSelectedId(item.id); setView('interview') }} disabled={navigationLocked}><span>{item.title}</span><small>{languageLabels[item.language]} · {item.status}</small></button>)}</nav>
       <div className="sidebar-bottom"><div className="account-chip"><span className="avatar small">{account.displayName.slice(0, 1)}</span><div><strong>{account.displayName}</strong><small>{account.id}</small></div><button title="ログアウト" onClick={signOut} disabled={navigationLocked}>↪</button></div></div>
     </aside>
-    <main className="workspace">{startError && <p className="error-message" role="alert">{startError}</p>}{savingSessionId ? <SavingInterview key={savingSessionId} sessionId={savingSessionId} onFinished={finishSaving} /> : isStarting ? <div className="loading" role="status" aria-busy="true">インタビューを準備しています…</div> : view === 'admin' ? <AdminPanel onOpenSession={id => { setSelectedId(id); setView('interview') }} /> : selectedId ? <Interview key={selectedId} sessionId={selectedId} onSessionsChanged={loadSessions} onExit={exitInterview} onCompleted={completeInterview} /> : <div className="empty-state"><div>✦</div><h2>インタビューを始めましょう</h2><p>言語を選び、「新しいインタビュー」を押してください。</p><button className="primary" onClick={createSession} disabled={navigationLocked}>新しいインタビュー</button></div>}</main>
+    <main className="workspace">{sessionsError && <div className="connection-error" role="alert"><p>{sessionsError}</p><button onClick={() => void loadSessions()}>セッション一覧を再確認</button></div>}{startError && <p className="error-message" role="alert">{startError}</p>}{view === 'admin' && !savingSessionId ? <AdminPanel onOpenSession={id => { setSelectedId(id); setView('interview') }} /> : selectedId && sessionsLoaded && !savingSessionId ? <Interview key={selectedId} sessionId={selectedId} voiceStart={voiceStart} onVoiceChange={setVoiceStart} onSessionsChanged={loadSessions} onExit={exitInterview} onCompleted={completeInterview} /> : <InterviewStandby disabled={navigationLocked} starting={isStarting} savingSessionId={savingSessionId} closing={closingMessage} language={language} onStart={createSession} onFinished={finishSaving} onAuthRequired={checkAuthentication} controls={standbyControls} />}</main>
   </div>
 }
 

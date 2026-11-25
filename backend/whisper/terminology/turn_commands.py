@@ -20,6 +20,8 @@ def _command_start(text: str) -> int | None:
         if candidate.casefold() == "over":
             if not previous or not (previous[-1].isalnum() or previous[-1] == "_"):
                 return start
+        elif candidate == "ドウゾ":
+            return start
         elif _JAPANESE_OVER.fullmatch(candidate):
             # Avoid word endings such as タイムオーバー and あおば. Short
             # variants おば/オバ need a clearer boundary than オーバー.

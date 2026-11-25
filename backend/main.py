@@ -2,6 +2,8 @@
 
 import argparse
 import asyncio
+import socket
+import sys
 import time
 
 import uvicorn
@@ -140,8 +142,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return args
 
 
+def _port_is_listening(host: str, port: int) -> bool:
+    target = {"0.0.0.0": "127.0.0.1", "::": "::1"}.get(host, host)
+    try:
+        with socket.create_connection((target, port), timeout=1):
+            return True
+    except OSError:
+        return False
+
+
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
+    if _port_is_listening(args.host, args.port):
+        print(f"{args.host}:{args.port} は既に使用されています。モデルの読み込みを中止しました。\n"
+              "バックエンドが起動済みの場合は、そのままブラウザから利用できます。\n"
+              "再起動する場合は、既存のバックエンドを停止してから起動してください。", file=sys.stderr)
+        raise SystemExit(1)
     uvicorn.run(app, host=args.host, port=args.port)
 
 

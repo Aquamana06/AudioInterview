@@ -8,6 +8,7 @@ class TurnCommandTests(unittest.TestCase):
         for command in (
             "オーバー", "オーバ", "オバ", "オバー", "おーばー", "おーば",
             "おおばー", "おば", "おばー", "ｵｰﾊﾞｰ", "over", "OVER", "ＯＶＥＲ",
+            "どうぞ", "ドウゾ", "ﾄﾞｳｿﾞ",
         ):
             for punctuation in ("", "、", "。", "，", "．", "！？", "…", "\"", "」", " \n"):
                 with self.subTest(command=command, punctuation=punctuation):
@@ -19,12 +20,16 @@ class TurnCommandTests(unittest.TestCase):
         self.assertEqual(split_turn_command("確認しました。オーバー、オーバー。"), ("確認しました。", True))
         self.assertEqual(split_turn_command("確認しました。「おばー」"), ("確認しました。", True))
         self.assertEqual(split_turn_command("確認しましたオーバー，"), ("確認しました", True))
+        self.assertEqual(split_turn_command("確認しました、どうぞ。"), ("確認しました、", True))
+        self.assertEqual(split_turn_command("確認しましたどうぞ"), ("確認しました", True))
+        self.assertEqual(split_turn_command("確認しました。どうぞ、オーバー。"), ("確認しました。", True))
 
     def test_words_and_commands_inside_an_answer_do_not_end_the_turn(self):
         for text in (
             "", "。", "オーバーフローを確認しました", "オーバーホール", "タイムオーバー",
             "あおば", "アオバ", "おばさん", "おばけ", "coverage", "leftover", "game over time",
-            "オーバーと言ってから停止します", "おば、と認識されました",
+            "オーバーと言ってから停止します", "おば、と認識されました", "どうぞよろしくお願いします",
+            "どうぞと言われました", "どうぞう", "ぶどうぞの",
         ):
             with self.subTest(text=text):
                 self.assertEqual(split_turn_command(text), (text, False))

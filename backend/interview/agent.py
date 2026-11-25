@@ -454,7 +454,7 @@ async def run_interview_turn(state: dict, user_input: str, history: list[dict], 
     question_fallback = None
     depth_question = False
     if info.get("user_questions"):
-        guide = "相手の質問に短く答え、必要なら答えやすい確認を一つする。"
+        guide = "相手の質問に対して短く答え、必要なら答えやすい確認を一つする。質問の意図についてなどの質問じゃなく，あなたの1意見を聞かれているなら，素直に思ったことを想像で答える．"
     elif info.get("signs_of_resistance"):
         guide = "無理に深掘りせず、圧を下げて答えやすい形で会話を進める。"
     elif revisit_guide:

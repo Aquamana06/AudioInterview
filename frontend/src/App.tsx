@@ -24,6 +24,7 @@ const labels: Record<SpeechState, string> = {
 }
 const languageLabels: Record<Language, string> = { ja: '日本語', en: 'English', de: 'Deutsch' }
 const locale: Record<Language, string> = { ja: 'ja-JP', en: 'en-US', de: 'de-DE' }
+const preferredVoice: Record<Language, string> = { ja: 'Kyoko', en: 'Samantha', de: 'Anna' }
 
 function jsonInit(method: string, body?: unknown): RequestInit {
   return { method, headers: { 'content-type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) }
@@ -224,6 +225,11 @@ function Interview({ sessionId, voiceStart, onVoiceChange, onSessionsChanged, on
     lastRequestAt: number
   } | null>(null)
 
+  useEffect(() => {
+    // Ask iOS to load its voice list before the first spoken question.
+    globalThis.speechSynthesis?.getVoices()
+  }, [])
+
   const speak = useCallback((value: string, language: Language) => {
     if (!globalThis.speechSynthesis || !globalThis.SpeechSynthesisUtterance) {
       setError('読み上げに対応していないため、画面のメッセージをご確認ください')
@@ -235,8 +241,26 @@ function Interview({ sessionId, voiceStart, onVoiceChange, onSessionsChanged, on
     setSpeechState('speaking')
     const sentences = value.match(/[^。！？.!?]+[。！？.!?]?/g)?.map(part => part.trim()).filter(Boolean)
     const parts = sentences?.length ? sentences : [value]
+    // Read the list again: iOS may only populate it after the initial request.
+    const voices = speechSynthesis.getVoices().filter(voice => voice.lang.toLowerCase().split(/[-_]/)[0] === language)
+    const preferredVoices = voices.filter(voice => voice.name === preferredVoice[language]
+      || voice.name.startsWith(`${preferredVoice[language]} (`))
+    // The Web Speech API has no quality field; use quality hints when exposed by iOS.
+    const quality = (voice: SpeechSynthesisVoice) => {
+      const description = `${voice.name} ${voice.voiceURI}`
+      if (/premium|プレミアム/i.test(description)) return 2
+      if (/enhanced|拡張|高品質/i.test(description)) return 1
+      return 0
+    }
+    const voice = preferredVoices.sort((a, b) => quality(b) - quality(a))[0]
+      ?? voices.find(voice => voice.default)
+      ?? voices[0]
     parts.forEach((part, index) => {
-      const utterance = new SpeechSynthesisUtterance(part); utterance.lang = locale[language]; utterance.rate = 1.2; utterance.pitch = 1.0
+      const utterance = new SpeechSynthesisUtterance(part)
+      utterance.lang = locale[language]
+      utterance.rate = 1.05
+      utterance.pitch = 1.1
+      if (voice) utterance.voice = voice
       utterance.onstart = () => { if (generation === speechGenerationRef.current) setSpeechState('speaking') }
       utterance.onend = () => {
         if (generation === speechGenerationRef.current && index === parts.length - 1) {

@@ -18,6 +18,7 @@ test('text and voice input in the interview screen', async t => {
   install('confirm', () => true)
   install('speechSynthesis', {
     cancel() {},
+    getVoices() { return [] },
     speak(utterance) { queueMicrotask(() => { utterance.onstart?.(); utterance.onend?.() }) },
   })
   install('SpeechSynthesisUtterance', class { constructor(text) { this.text = text } })

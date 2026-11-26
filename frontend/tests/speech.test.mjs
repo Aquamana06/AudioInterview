@@ -11,6 +11,8 @@ for (const [mime, extension] of [['audio/webm;codecs=opus', 'webm'], ['audio/wav
       assert.equal(options.method, 'POST')
       assert.equal(options.credentials, 'same-origin')
       assert.equal(options.body.get('language'), 'ja')
+      assert.equal(options.body.get('sessionId'), null)
+      assert.equal(options.body.get('recordingId'), null)
       const audio = options.body.get('audio')
       assert.equal(audio.name, `recording.${extension}`)
       assert.equal(await audio.text(), 'recorded audio')
@@ -21,6 +23,20 @@ for (const [mime, extension] of [['audio/webm;codecs=opus', 'webm'], ['audio/wav
     assert.equal(result.maskedText, '薬品Aを確認')
   })
 }
+
+test('final recording includes the session and stable recording ID for server storage', async t => {
+  const previous = globalThis.fetch
+  t.after(() => { globalThis.fetch = previous })
+  globalThis.fetch = async (_path, options) => {
+    assert.equal(options.body.get('sessionId'), 'interview_001')
+    assert.equal(options.body.get('recordingId'), 'recording_001')
+    return Response.json({ rawText: '回答', maskedText: '回答', recordingId: 'recording_001', audioFile: 'audio/recording_001.ogg' })
+  }
+  const result = await transcribeAudio(new Blob(['answer'], { type: 'audio/ogg' }), 'ja', {
+    sessionId: 'interview_001', recordingId: 'recording_001',
+  })
+  assert.equal(result.audioFile, 'audio/recording_001.ogg')
+})
 
 test('reports server errors to the caller', async t => {
   const previous = globalThis.fetch

@@ -13,6 +13,7 @@ from api.auth import (
     public_account, require_account, require_admin, set_auth_cookie,
 )
 from db.database import database, get_state, insert_message, list_messages, new_id, now_iso, public_message, row_dict, update_state
+from db.archive import archive_session_safe, RecordingConflict, recording_for_message, save_recording
 from db.memory import ensure_session_memory, finalize_session, get_session_memory, load_participant_profile, load_task_memory
 from interview.agent import ENDINGS, extract_turn, initial_state, run_interview_turn
 from interview.diagnostics import log_event, log_turn, logger
@@ -50,12 +51,16 @@ def _session_payload(session: dict) -> dict:
         messages = list_messages(connection, session["id"])
         saved_state = get_state(connection, session["id"])
         memory = get_session_memory(connection, session["id"])
+        archive = row_dict(connection.execute(
+            "SELECT status, exported_at, last_error FROM interview_archives WHERE session_id=?", (session["id"],)
+        ).fetchone())
     return {
         "session": session,
         "messages": [public_message(item) for item in messages],
         "state": saved_state["state"] if saved_state else initial_state(),
         "stateLabel": saved_state["stateLabel"] if saved_state else "running",
         "memory": memory,
+        "archive": archive,
     }
 
 
@@ -126,11 +131,31 @@ async def _process_message(session: dict, body: dict, background_tasks: Backgrou
     if not content:
         raise HTTPException(400, "maskedText is required")
     mode = "voice" if body.get("inputMode") == "voice" else "text"
+    recording_id = str(body.get("recordingId") or "")
+    duplicate = False
     with database() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        current = connection.execute("SELECT status FROM interview_sessions WHERE id=?", (session["id"],)).fetchone()
+        if current["status"] == "ended":
+            raise HTTPException(409, "Session has ended")
         saved = get_state(connection, session["id"])
         state = saved["state"] if saved else initial_state()
-        insert_message(connection, session["id"], "user", content, mode, session["language"])
+        recording = None
+        if recording_id:
+            if mode != "voice":
+                raise HTTPException(400, "Recording requires voice input")
+            try:
+                recording = recording_for_message(connection, session["id"], recording_id)
+            except ValueError as error:
+                raise HTTPException(400, str(error)) from error
+            duplicate = recording["message_id"] is not None
+        if not duplicate:
+            message_id = insert_message(connection, session["id"], "user", content, mode, session["language"])
+            if recording:
+                connection.execute("UPDATE interview_recordings SET message_id=? WHERE id=?", (message_id, recording_id))
         history = list_messages(connection, session["id"])
+    if duplicate:
+        return _session_payload(session)
     memory = load_participant_profile(session["account_id"])
     stalled = _stagnation(session["id"])
     before_depth = state.get("task_depth", 0)
@@ -153,6 +178,7 @@ async def _process_message(session: dict, body: dict, background_tasks: Backgrou
             connection.execute("UPDATE interview_sessions SET updated_at=? WHERE id=?", (stamp, session["id"]))
     log_turn(session["id"], result, depth_stagnation_count=next_stalled)
     if result["stateLabel"] == "end":
+        await asyncio.to_thread(archive_session_safe, session["id"])
         with database() as connection:
             messages = list_messages(connection, session["id"])
         ensure_session_memory(session["account_id"], session["id"], messages)
@@ -369,12 +395,15 @@ async def end_session(session_id: str, background_tasks: BackgroundTasks,
                 "UPDATE interview_sessions SET status='ended', ended_at=?, updated_at=? WHERE id=?",
                 (stamp, stamp, session_id),
             )
+        await asyncio.to_thread(archive_session_safe, session_id)
         background_tasks.add_task(_finalize_session_safe, session)
         with database() as connection:
             messages = list_messages(connection, session_id)
         ensure_session_memory(session["account_id"], session_id, messages)
         log_event("session_ended", session_id, reason="manual",
                   state=saved["state"] if saved else initial_state())
+    else:
+        await asyncio.to_thread(archive_session_safe, session_id)
     return _session_payload({**session, "status": "ended", "ended_at": now_iso()})
 
 
@@ -385,14 +414,33 @@ async def speech_transcribe(request: Request, account: dict = Depends(require_ac
             raise HTTPException(400, "Audio file is required")
         content = await upload.read()
         filename = upload.filename or "audio.webm"
+        content_type = upload.content_type or "application/octet-stream"
         language = str(form.get("language") or "ja")
+        session_id = str(form.get("sessionId") or "")
+        recording_id = str(form.get("recordingId") or "")
     if not content:
         raise HTTPException(400, "Audio file is empty")
-    raw_text = await asyncio.to_thread(local_whisper.transcribe, content, filename, language)
+    recording = {}
+    if session_id or recording_id:
+        if not session_id or not recording_id:
+            raise HTTPException(400, "sessionId and recordingId are both required")
+        _owned_session(session_id, account)
+        try:
+            recording = await asyncio.to_thread(
+                save_recording, session_id, recording_id, content, filename, content_type
+            )
+        except RecordingConflict as error:
+            raise HTTPException(409, str(error)) from error
+        except ValueError as error:
+            raise HTTPException(400, str(error)) from error
+    try:
+        raw_text = await asyncio.to_thread(local_whisper.transcribe, content, filename, language)
+    except Exception as error:
+        raise HTTPException(502, str(error)) from error
     # Keep the original transcript for diagnostics and the stop command out of the answer.
     answer, end_of_turn = split_turn_command(raw_text)
     normalized = prepare_text(answer)
-    return {"rawText": raw_text, **normalized, "endOfTurn": end_of_turn}
+    return {"rawText": raw_text, **normalized, "endOfTurn": end_of_turn, **recording}
 
 
 async def admin_accounts(account: dict = Depends(require_admin)):

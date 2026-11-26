@@ -48,3 +48,5 @@ npm run build
 ```
 
 データベースの migration SQL は `backend/db/migrations/` にあります。
+
+回答音声と音声パスを保存し、インタビュー終了時に会話JSONを `backend/instance/interviews/` へ自動保存します。参照・JSON出力・音声付き取り出し・DBバックアップのコマンドは [データ保存・取り出しのREADME](docs/data-storage/README.md) を参照してください。

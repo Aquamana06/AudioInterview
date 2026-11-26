@@ -5,13 +5,19 @@ export type Transcription = {
   normalizedText: string
   maskedText: string
   endOfTurn: boolean
+  recordingId?: string
+  audioFile?: string
 }
 
-export async function transcribeAudio(blob: Blob, language: string): Promise<Transcription> {
+export async function transcribeAudio(blob: Blob, language: string, recording?: { sessionId: string; recordingId: string }): Promise<Transcription> {
   const form = new FormData()
   const extension = blob.type.includes('wav') ? 'wav' : blob.type.includes('ogg') ? 'ogg' : blob.type.includes('mp4') ? 'mp4' : 'webm'
   form.append('audio', blob, `recording.${extension}`)
   form.append('language', language)
+  if (recording) {
+    form.append('sessionId', recording.sessionId)
+    form.append('recordingId', recording.recordingId)
+  }
   return api<Transcription>('/api/speech/transcribe', { method: 'POST', body: form })
 }
 

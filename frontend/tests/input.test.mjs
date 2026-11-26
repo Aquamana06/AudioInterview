@@ -420,6 +420,10 @@ test('text and voice input in the interview screen', async t => {
       const body = JSON.parse(ui.calls.find(call => call.path.endsWith('/messages')).options.body)
       assert.equal(body.inputMode, 'voice')
       assert.equal(body.maskedText, '音声回答')
+      const audio = ui.calls.find(call => call.path === '/api/speech/transcribe').options.body
+      assert.equal(audio.get('sessionId'), 'test')
+      assert.ok(audio.get('recordingId'))
+      assert.equal(body.recordingId, audio.get('recordingId'))
     } finally { await ui.dispose() }
   })
 
@@ -464,6 +468,11 @@ test('text and voice input in the interview screen', async t => {
       await waitFor(() => ui.calls.some(call => call.path.endsWith('/messages')))
       assert.equal(recorders[0].state, 'inactive')
       assert.equal(recognitionCalls, 3) // Two rolling windows and the full answer.
+      const audioUploads = ui.calls.filter(call => call.path === '/api/speech/transcribe')
+      assert.equal(audioUploads[0].options.body.get('recordingId'), null)
+      assert.equal(audioUploads[1].options.body.get('recordingId'), null)
+      assert.equal(audioUploads[2].options.body.get('sessionId'), 'test')
+      assert.ok(audioUploads[2].options.body.get('recordingId'))
       assert.equal(ui.calls.filter(call => call.path.endsWith('/messages')).length, 1)
       assert.equal(JSON.parse(ui.calls.find(call => call.path.endsWith('/messages')).options.body).maskedText, '確認しました。')
     } finally { await ui.dispose() }

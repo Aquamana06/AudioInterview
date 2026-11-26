@@ -395,7 +395,7 @@ function Interview({ sessionId, voiceStart, onVoiceChange, onSessionsChanged, on
     gain.gain.exponentialRampToValueAtTime(0.001, context.currentTime + duration); oscillator.stop(context.currentTime + duration)
   }
 
-  async function transcribe(blob: Blob) {
+  async function transcribe(blob: Blob, recordingId: string) {
     console.info('[AudioInterview][Whisper] transcription requested', {
       size: blob.size,
       type: blob.type,
@@ -406,7 +406,7 @@ function Interview({ sessionId, voiceStart, onVoiceChange, onSessionsChanged, on
     }
     const sequence = ++transcriptionSequenceRef.current
     setLiveTranscript('サーバーで音声を解析しています…')
-    const result = await transcribeAudio(blob, payload.session.language)
+    const result = await transcribeAudio(blob, payload.session.language, { sessionId: payload.session.id, recordingId })
     if (sequence === transcriptionSequenceRef.current) {
       setLiveTranscript(result.normalizedText ?? result.rawText)
     }
@@ -426,11 +426,12 @@ function Interview({ sessionId, voiceStart, onVoiceChange, onSessionsChanged, on
       }
       streamRef.current = stream
       const recorder = new MediaRecorder(stream); chunksRef.current = []; recorderRef.current = recorder
+      const recordingId = crypto.randomUUID()
       recorder.ondataavailable = event => {
         if (!event.data.size) return
         chunksRef.current.push(event.data)
       }
-      recorder.onstop = () => { void finishRecording(recorder.mimeType) }
+      recorder.onstop = () => { void finishRecording(recorder.mimeType, recordingId) }
       recorder.start(); recordingRef.current = true; setIsRecording(true); setSpeechState('recording'); beep(880)
       startOverDetector(stream, payload.session.language)
     } catch (caught) {
@@ -443,7 +444,7 @@ function Interview({ sessionId, voiceStart, onVoiceChange, onSessionsChanged, on
   }
   startRecordingRef.current = startRecording
 
-  async function finishRecording(mimeType: string) {
+  async function finishRecording(mimeType: string, recordingId: string) {
     const generation = voiceGenerationRef.current
     recordingRef.current = false; setIsRecording(false); finalizingRef.current = true; setIsFinalizing(true)
     stopOverDetector()
@@ -455,10 +456,10 @@ function Interview({ sessionId, voiceStart, onVoiceChange, onSessionsChanged, on
         size: blob.size,
         type: blob.type,
       })
-      const result = await transcribe(blob)
+      const result = await transcribe(blob, recordingId)
       if (generation !== voiceGenerationRef.current) return
       const answer = (result?.maskedText ?? '').trim()
-      if (answer) await send(answer, 'voice', result?.normalizedText ?? result?.rawText, true, result?.maskedText)
+      if (answer) await send(answer, 'voice', result?.normalizedText ?? result?.rawText, true, result?.maskedText, recordingId)
       else {
         setError('音声を認識できませんでした。もう一度、少し長めに話してください')
         setSpeechState('ready')
@@ -514,7 +515,7 @@ function Interview({ sessionId, voiceStart, onVoiceChange, onSessionsChanged, on
     if (!busyRef.current) setSpeechState('ready')
   }
 
-  async function send(content: string, inputMode: 'text' | 'voice', displayText?: string, manageBusy = true, preparedMaskedText?: string) {
+  async function send(content: string, inputMode: 'text' | 'voice', displayText?: string, manageBusy = true, preparedMaskedText?: string, recordingId?: string) {
     if (!payload || !content.trim() || (manageBusy && busyRef.current)) return
     if (manageBusy) { busyRef.current = true; setIsBusy(true) }
     setSpeechState('thinking'); setError('')
@@ -523,7 +524,7 @@ function Interview({ sessionId, voiceStart, onVoiceChange, onSessionsChanged, on
       const prepared = preparedMaskedText
         ? { maskedText: preparedMaskedText }
         : await api<{ normalizedText: string; maskedText: string }>('/api/local/mask-text', jsonInit('POST', { text: content }))
-      const result = await api<SessionPayload>(`/api/sessions/${payload.session.id}/messages`, jsonInit('POST', { maskedText: prepared.maskedText, inputMode, editMessageId: editingId || undefined }))
+      const result = await api<SessionPayload>(`/api/sessions/${payload.session.id}/messages`, jsonInit('POST', { maskedText: prepared.maskedText, inputMode, recordingId, editMessageId: editingId || undefined }))
       if (result.session.status === 'ended') {
         presentClosing(result)
         return
@@ -549,7 +550,7 @@ function Interview({ sessionId, voiceStart, onVoiceChange, onSessionsChanged, on
   }
 
   async function endInterview() {
-    if (!payload || busyRef.current || isClosing) return
+    if (!payload || busyRef.current || isClosing || finalizingRef.current) return
     switchToTextInput()
     busyRef.current = true; setIsBusy(true); setError('')
     try {
@@ -582,7 +583,7 @@ function Interview({ sessionId, voiceStart, onVoiceChange, onSessionsChanged, on
   const userIsActive = speechState === 'recording' || speechState === 'transcribing'
   return <section className={`interview-layout ${interviewerIsActive ? 'interviewer-active' : ''} ${userIsActive ? 'user-active' : ''}`}>
     <div className="interview-scene alpaca-background" style={{ backgroundImage: `url(${alpacaBackground})` }} aria-hidden="true"><div className="scene-shade" /></div>
-    <header className="interview-header"><div className={`speech-status ${speechState}`}><i />{isClosing ? '終了のご挨拶' : isThinking ? 'インタビュアーが考え中…' : labels[speechState]}</div><button className="danger-outline" onClick={payload.session.status === 'ended' ? onExit : endInterview} disabled={isClosing || isBusy}>{payload.session.status === 'ended' ? '待受に戻る' : 'インタビューを終了'}</button></header>
+    <header className="interview-header"><div className={`speech-status ${speechState}`}><i />{isClosing ? '終了のご挨拶' : isThinking ? 'インタビュアーが考え中…' : labels[speechState]}</div><button className="danger-outline" onClick={payload.session.status === 'ended' ? onExit : endInterview} disabled={isClosing || isBusy || isFinalizing}>{payload.session.status === 'ended' ? '待受に戻る' : 'インタビューを終了'}</button></header>
     <div className="interview-stage">
       <div className={`assistant-bubble ${isThinking ? 'thinking' : ''}`} aria-live="polite">
         <span>interviewer</span>

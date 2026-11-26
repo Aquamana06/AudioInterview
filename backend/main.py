@@ -24,6 +24,7 @@ from api.auth import ensure_admin
 from api import routes
 from api.settings import BACKEND_ROOT
 from db.database import initialize_database
+from db.archive import recover_archives
 from db.memory import recover_session_memories
 from llm.client import configured, model as llm_model, status as llm_status
 from llm.local_qwen import warmup as warmup_qwen
@@ -35,6 +36,7 @@ async def lifespan(_: FastAPI):
     configure_logging()
     initialize_database()
     ensure_admin()
+    await asyncio.to_thread(recover_archives)
     logger = logging.getLogger("uvicorn.error")
     started = time.monotonic()
     if configured():

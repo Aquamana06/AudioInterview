@@ -76,6 +76,8 @@ JSON 出力はスキーマをプロンプトに含めて要求し、応答を JS
 
 SQLite DB の相対パスは `backend/` を基準に解決します。起動時に `db/migrations/` の SQL を適用します。
 
+ユーザーの回答音声をDBと同じ場所の `interviews/{session_id}/audio/` に保存し、終了時に会話全体を `transcript.json` に出力します。音声はSQLiteの `interview_recordings` で発言と紐づけ、表示名とJSON出力状態は `interview_archives` に保存します。過去の終了済み会話や出力に失敗したJSONも起動時に出力します。参照・簡略JSON出力・音声込みの取り出し・DBバックアップのコマンドは [データ保存・取り出しのREADME](../docs/data-storage/README.md) を参照してください。
+
 ## モジュール
 
 - api/: FastAPI ルート、認証、設定、静的フロント配信

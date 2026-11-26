@@ -58,15 +58,17 @@ class StartupTests(unittest.IsolatedAsyncioTestCase):
     async def test_models_are_warmed_before_startup_completes(self):
         events = []
         with patch.object(main, 'initialize_database'), patch.object(main, 'ensure_admin'), \
+             patch.object(main, 'recover_archives', side_effect=lambda: events.append('archive')), \
              patch.object(main, 'configured', return_value=True), \
              patch.object(main, 'llm_model', return_value='test/model'), \
              patch.object(main, 'warmup_qwen', side_effect=lambda _: events.append('qwen')), \
              patch.object(main.routes.local_whisper, 'warmup', side_effect=lambda: events.append('whisper')):
             async with main.lifespan(main.app):
-                self.assertEqual(events, ['qwen', 'whisper'])
+                self.assertEqual(events, ['archive', 'qwen', 'whisper'])
 
     async def test_failed_warmup_prevents_serving_requests(self):
         with patch.object(main, 'initialize_database'), patch.object(main, 'ensure_admin'), \
+             patch.object(main, 'recover_archives'), \
              patch.object(main, 'configured', return_value=True), \
              patch.object(main, 'warmup_qwen', side_effect=RuntimeError('out of memory')):
             with self.assertRaisesRegex(RuntimeError, 'out of memory'):

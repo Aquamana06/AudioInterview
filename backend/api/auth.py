@@ -28,7 +28,12 @@ def ensure_admin() -> None:
 
 
 def public_account(account: dict) -> dict:
-    return {"id": account["id"], "role": account["role"], "displayName": account["display_name"]}
+    with database() as connection:
+        acknowledged = connection.execute(
+            "SELECT 1 FROM manual_acknowledgements WHERE account_id=?", (account["id"],)
+        ).fetchone() is not None
+    return {"id": account["id"], "role": account["role"], "displayName": account["display_name"],
+            "manualAcknowledged": acknowledged}
 
 
 def login(account_id: str, password: str | None) -> tuple[dict, str]:

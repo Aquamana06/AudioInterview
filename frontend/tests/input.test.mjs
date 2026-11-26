@@ -18,6 +18,8 @@ test('text and voice input in the interview screen', async t => {
   install('confirm', () => true)
   install('speechSynthesis', {
     cancel() {},
+    pause() { this.paused = true },
+    resume() { this.paused = false },
     getVoices() { return [] },
     speak(utterance) { queueMicrotask(() => { utterance.onstart?.(); utterance.onend?.() }) },
   })
@@ -41,6 +43,8 @@ test('text and voice input in the interview screen', async t => {
     mimeType = 'audio/webm'
     constructor() { recorders.push(this) }
     start() { this.state = 'recording' }
+    pause() { this.state = 'paused' }
+    resume() { this.state = 'recording' }
     stop() {
       this.state = 'inactive'
       this.ondataavailable?.({ data: new Blob(['audio'], { type: this.mimeType }) })
@@ -75,7 +79,8 @@ test('text and voice input in the interview screen', async t => {
   async function setup(options = {}) {
     const calls = []
     let loggedOut = options.loggedOut
-    const account = { id: options.role === 'admin' ? 'admin' : 'operator', role: options.role ?? 'operator', displayName: 'テスト' }
+    const account = { id: options.role === 'admin' ? 'admin' : 'operator', role: options.role ?? 'operator', displayName: 'テスト', manualAcknowledged: options.manualAcknowledged ?? true }
+    let manualResponse = async () => { account.manualAcknowledged = true; return Response.json({ account }) }
     window.localStorage.clear()
     if (options.workspace) window.localStorage.setItem(`audiointerview.workspace.${account.id}`, JSON.stringify(options.workspace))
     const recognitions = []
@@ -126,6 +131,7 @@ test('text and voice input in the interview screen', async t => {
     install('fetch', async (path, options = {}) => {
       calls.push({ path, options })
       if (path === '/api/me') return meResponse()
+      if (path === '/api/me/manual') return manualResponse()
       if (path === '/api/auth/login') { loggedOut = false; return Response.json({ account }) }
       if (path === '/api/admin/accounts') return Response.json({ accounts: [] })
       if (path === '/api/admin/histories') return Response.json({ histories: [] })
@@ -181,6 +187,7 @@ test('text and voice input in the interview screen', async t => {
       setStartResponse(fn) { startResponse = fn },
       setDetailResponse(fn) { detailResponse = fn },
       setMeResponse(fn) { meResponse = fn },
+      setManualResponse(fn) { manualResponse = fn },
       setSessionsResponse(fn) { sessionsResponse = fn },
       async reload() {
         await act(async () => root.unmount())
@@ -210,6 +217,88 @@ test('text and voice input in the interview screen', async t => {
       },
     }
   }
+
+  await t.test('first interview shows the manual before starting and remembers confirmation after reload', async () => {
+    const ui = await setup({ manualAcknowledged: false, openNewSession: false, wakeSupported: true })
+    try {
+      await waitFor(() => document.querySelector('.manual-dialog'))
+      assert.match(document.querySelector('.manual-dialog').textContent, /はじめての方へ/)
+      assert.equal(ui.recognitions.length, 0)
+      assert.equal(ui.calls.filter(call => call.path === '/api/sessions' && call.options.method === 'POST').length, 0)
+      await click(document.querySelector('.manual-footer button'))
+      await waitFor(() => !document.querySelector('.manual-dialog'))
+      assert.equal(ui.calls.filter(call => call.path === '/api/me/manual').length, 1)
+      await ui.reload()
+      await waitFor(() => !document.querySelector('.new-session').disabled)
+      assert.equal(document.querySelector('.manual-dialog'), null)
+      await click(document.querySelector('.interview-utilities .manual-trigger'))
+      await waitFor(() => document.querySelector('.manual-dialog'))
+      await click(document.querySelector('.manual-close'))
+      assert.equal(ui.calls.filter(call => call.path === '/api/me/manual').length, 1)
+    } finally { await ui.dispose() }
+  })
+
+  await t.test('failed first-time confirmation keeps the manual open and the interview unstarted', async () => {
+    const ui = await setup({ manualAcknowledged: false, openNewSession: false })
+    try {
+      ui.setManualResponse(async () => Response.json({ error: 'unavailable' }, { status: 503 }))
+      await click(document.querySelector('.manual-footer button'))
+      await waitFor(() => document.querySelector('.manual-footer [role="alert"]'))
+      assert.equal(document.querySelector('.new-session').disabled, true)
+      assert.equal(ui.calls.filter(call => call.path.endsWith('/start')).length, 0)
+    } finally { await ui.dispose() }
+  })
+
+  await t.test('existing interview participants can open the manual without automatic onboarding', async () => {
+    const ui = await setup({ manualAcknowledged: false, openNewSession: false,
+      sessions: [{ id: 'old', account_id: 'operator', language: 'ja', title: '以前の面談', status: 'ended' }] })
+    try {
+      assert.equal(document.querySelector('.manual-dialog'), null)
+      await click(document.querySelector('.interview-utilities .manual-trigger'))
+      assert.ok(document.querySelector('.manual-dialog'))
+      assert.equal(document.querySelector('.manual-close').textContent, '閉じる ×')
+    } finally { await ui.dispose() }
+  })
+
+  await t.test('manual keeps the mounted interview and unsent text intact', async () => {
+    const ui = await setup()
+    try {
+      await ui.type('入力途中の回答です')
+      const textarea = document.querySelector('textarea')
+      const detailRequests = ui.calls.filter(call => call.path === '/api/sessions/test').length
+      await click(document.querySelector('.interview-utilities .manual-trigger'))
+      await waitFor(() => document.querySelector('.manual-dialog'))
+      assert.strictEqual(document.querySelector('textarea'), textarea)
+      assert.equal(textarea.value, '入力途中の回答です')
+      await click(document.querySelector('.manual-close'))
+      assert.strictEqual(document.querySelector('textarea'), textarea)
+      assert.equal(textarea.value, '入力途中の回答です')
+      assert.equal(ui.calls.filter(call => call.path === '/api/sessions/test').length, detailRequests)
+      assert.equal(ui.calls.filter(call => call.path.endsWith('/messages')).length, 0)
+    } finally { await ui.dispose() }
+  })
+
+  await t.test('manual pauses and resumes the same recording without sending or losing audio', async () => {
+    const ui = await setup()
+    try {
+      await click(document.querySelector('.handsfree-button'))
+      await waitFor(() => recorders[0]?.state === 'recording')
+      const recorder = recorders[0]
+      recorder.ondataavailable({ data: new Blob(['before pause'], { type: 'audio/webm' }) })
+      await click(document.querySelector('.interview-utilities .manual-trigger'))
+      await waitFor(() => recorder.state === 'paused')
+      assert.equal(globalThis.speechSynthesis.paused, true)
+      assert.equal(ui.calls.filter(call => call.path === '/api/speech/transcribe').length, 0)
+      await click(document.querySelector('.manual-close'))
+      await waitFor(() => recorder.state === 'recording')
+      assert.equal(recorders.length, 1)
+      assert.equal(globalThis.speechSynthesis.paused, false)
+      await click(document.querySelector('.handsfree-button'))
+      await waitFor(() => ui.calls.some(call => call.path.endsWith('/messages')))
+      const audio = ui.calls.find(call => call.path === '/api/speech/transcribe').options.body.get('audio')
+      assert.equal(await audio.text(), 'before pauseaudio')
+    } finally { await ui.dispose() }
+  })
 
   await t.test('reload preserves the authenticated interview and voice preference without creating another session', async () => {
     const ui = await setup()

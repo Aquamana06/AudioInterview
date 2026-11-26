@@ -69,6 +69,7 @@ app.add_api_route("/api/local/transcribe", routes.local_transcribe, methods=["PO
 app.add_api_route("/api/auth/login", routes.auth_login, methods=["POST"], summary="ログイン")
 app.add_api_route("/api/auth/logout", routes.auth_logout, methods=["POST"], summary="ログアウト")
 app.add_api_route("/api/me", routes.me, methods=["GET"], summary="ログイン中のアカウント")
+app.add_api_route("/api/me/manual", routes.acknowledge_manual, methods=["POST"], summary="操作マニュアルの初回確認")
 app.add_api_route("/api/me/password", routes.change_password, methods=["PUT"], summary="管理者パスワード変更")
 app.add_api_route("/api/sessions", routes.sessions, methods=["GET"], summary="セッション一覧")
 app.add_api_route("/api/sessions", routes.create_session, methods=["POST"], status_code=201, summary="セッション作成")

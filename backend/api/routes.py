@@ -285,6 +285,15 @@ async def auth_logout(request: Request):
     return response
 
 
+async def acknowledge_manual(account: dict = Depends(require_account)):
+    with database() as connection:
+        connection.execute(
+            "INSERT OR IGNORE INTO manual_acknowledgements (account_id, acknowledged_at) VALUES (?, ?)",
+            (account["id"], now_iso()),
+        )
+    return {"account": public_account(account)}
+
+
 async def me(account: dict = Depends(require_account)):
     return {"account": public_account(account)}
 

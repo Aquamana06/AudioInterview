@@ -57,6 +57,24 @@ class APITests(DatabaseTestCase):
         response = self.client.get("/api/me", headers={"Authorization": f"Bearer {token}"})
         self.assertEqual(response.status_code, 401)
 
+    def test_manual_acknowledgement_persists_per_account_without_creating_interview(self):
+        self.assertEqual(self.client.post("/api/me/manual").status_code, 401)
+        self.login()
+        self.operator("manual_one")
+        self.operator("manual_two")
+        self.login("manual_one", "")
+        self.assertFalse(self.client.get("/api/me").json()["account"]["manualAcknowledged"])
+        for _ in range(2):
+            response = self.client.post("/api/me/manual")
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertTrue(response.json()["account"]["manualAcknowledged"])
+        self.client.post("/api/auth/logout")
+        self.assertTrue(self.login("manual_one", "").json()["account"]["manualAcknowledged"])
+        self.assertFalse(self.login("manual_two", "").json()["account"]["manualAcknowledged"])
+        with database() as connection:
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM manual_acknowledgements").fetchone()[0], 1)
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM interview_sessions").fetchone()[0], 0)
+
     def test_expired_token_is_rejected(self):
         token = self.login().json()["token"]
         with database() as connection:

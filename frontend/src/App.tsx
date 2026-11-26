@@ -6,10 +6,11 @@ import { api, ApiError } from './api'
 import { pcmToWav, transcribeAudio } from './speech'
 import { isWakeWord, wakeRecognitionConstructor } from './wakeWord'
 import { clearWorkspace, readWorkspace, saveWorkspace } from './workspace'
+import { OperationManual } from './OperationManual'
 
 type Language = 'ja' | 'en' | 'de'
 type Role = 'admin' | 'operator'
-type Account = { id: string; role: Role; displayName: string }
+type Account = { id: string; role: Role; displayName: string; manualAcknowledged?: boolean }
 type Session = { id: string; account_id: string; title: string; language: Language; status: 'running' | 'ended'; started_at: string; updated_at: string; memory_status?: 'pending' | 'ready' | 'fallback' | null }
 type Message = { id: string; role: 'system' | 'user'; content: string; inputMode: 'text' | 'voice' | 'system'; createdAt: string; updatedAt: string }
 type InterviewState = { task_coverage: number; task_depth: number; irregular_coverage: number; turn_count: number }
@@ -186,7 +187,7 @@ function SavingInterview({ sessionId, onFinished, onAuthRequired }: { sessionId:
   </div>
 }
 
-function Interview({ sessionId, voiceStart, onVoiceChange, onSessionsChanged, onExit, onCompleted }: { sessionId: string; voiceStart: boolean; onVoiceChange: (enabled: boolean) => void; onSessionsChanged: () => void; onExit: () => void; onCompleted: (sessionId: string, closing: string) => void }) {
+function Interview({ sessionId, voiceStart, manualOpen, controls, onVoiceChange, onSessionsChanged, onExit, onCompleted }: { sessionId: string; voiceStart: boolean; manualOpen: boolean; controls: ReactNode; onVoiceChange: (enabled: boolean) => void; onSessionsChanged: () => void; onExit: () => void; onCompleted: (sessionId: string, closing: string) => void }) {
   const [payload, setPayload] = useState<SessionPayload | null>(null)
   const [text, setText] = useState('')
   const [displayOverrides, setDisplayOverrides] = useState<Record<string, string>>({})
@@ -216,6 +217,10 @@ function Interview({ sessionId, voiceStart, onVoiceChange, onSessionsChanged, on
   const initialSpeechStartedRef = useRef(false)
   const speechGenerationRef = useRef(0)
   const busyRef = useRef(false)
+  const interviewLanguage = payload?.session.language
+  const manualOpenRef = useRef(manualOpen)
+  manualOpenRef.current = manualOpen
+  const deferredSpeechRef = useRef<{ content: string; language: Language } | null>(null)
   const overDetectorRef = useRef<{
     context: AudioContext
     source: MediaStreamAudioSourceNode
@@ -231,6 +236,11 @@ function Interview({ sessionId, voiceStart, onVoiceChange, onSessionsChanged, on
   }, [])
 
   const speak = useCallback((value: string, language: Language) => {
+    if (manualOpenRef.current) {
+      deferredSpeechRef.current = { content: value, language }
+      setSpeechState('speaking')
+      return
+    }
     if (!globalThis.speechSynthesis || !globalThis.SpeechSynthesisUtterance) {
       setError('読み上げに対応していないため、画面のメッセージをご確認ください')
       setSpeechState('ready')
@@ -292,11 +302,11 @@ function Interview({ sessionId, voiceStart, onVoiceChange, onSessionsChanged, on
     setSpeechState('ended')
   }, [payload?.session.status, isClosing])
   useEffect(() => {
-    if (!isClosing || !payload || streamingMessageId || isBusy || isFinalizing || speechState === 'speaking' || completionSentRef.current) return
+    if (manualOpen || !isClosing || !payload || streamingMessageId || isBusy || isFinalizing || speechState === 'speaking' || completionSentRef.current) return
     completionSentRef.current = true
     const closing = [...payload.messages].reverse().find(message => message.role === 'system')?.content ?? ''
     onCompleted(payload.session.id, closing)
-  }, [isClosing, payload, streamingMessageId, isBusy, isFinalizing, speechState, onCompleted])
+  }, [manualOpen, isClosing, payload, streamingMessageId, isBusy, isFinalizing, speechState, onCompleted])
   useEffect(() => {
     if (!payload || initialSpeechStartedRef.current || payload.session.status === 'ended') return
     const opening = payload.messages.length === 1 && payload.messages[0].role === 'system' ? payload.messages[0] : null
@@ -315,6 +325,7 @@ function Interview({ sessionId, voiceStart, onVoiceChange, onSessionsChanged, on
     if (pendingSpeech) speak(pendingSpeech.content, pendingSpeech.language)
     let cursor = 0
     const timer = window.setInterval(() => {
+      if (manualOpenRef.current) return
       cursor = Math.min(message.content.length, cursor + 2)
       setDisplayOverrides(current => ({ ...current, [message.id]: message.content.slice(0, cursor) }))
       if (cursor >= message.content.length) {
@@ -328,10 +339,27 @@ function Interview({ sessionId, voiceStart, onVoiceChange, onSessionsChanged, on
   useEffect(() => {
     // Recheck when either playback or the previous turn finishes. A one-shot
     // onend callback can arrive while finalization still prevents recording.
-    if (!handsFree || (speechState !== 'ready' && speechState !== 'wake') || isBusy || isFinalizing || streamingMessageId || payload?.session.status !== 'running') return
+    if (manualOpen || !handsFree || (speechState !== 'ready' && speechState !== 'wake') || isBusy || isFinalizing || streamingMessageId || payload?.session.status !== 'running') return
     const timer = window.setTimeout(() => startRecordingRef.current(), 0)
     return () => window.clearTimeout(timer)
-  }, [handsFree, speechState, isBusy, isFinalizing, streamingMessageId, payload?.session.status])
+  }, [manualOpen, handsFree, speechState, isBusy, isFinalizing, streamingMessageId, payload?.session.status])
+  useEffect(() => {
+    const recorder = recorderRef.current
+    if (manualOpen) {
+      stopOverDetector()
+      if (recorder?.state === 'recording') recorder.pause()
+      globalThis.speechSynthesis?.pause?.()
+    } else {
+      if (recorder?.state === 'paused') {
+        recorder.resume()
+        if (streamRef.current && interviewLanguage) startOverDetector(streamRef.current, interviewLanguage)
+      }
+      const deferred = deferredSpeechRef.current
+      deferredSpeechRef.current = null
+      if (deferred) speak(deferred.content, deferred.language)
+      else globalThis.speechSynthesis?.resume?.()
+    }
+  }, [manualOpen, speak, interviewLanguage])
   useEffect(() => () => {
     handsFreeRef.current = false
     speechGenerationRef.current += 1
@@ -376,7 +404,7 @@ function Interview({ sessionId, voiceStart, onVoiceChange, onSessionsChanged, on
       const snapshot = new Float32Array(detector.samples)
       void transcribeAudio(pcmToWav(snapshot, context.sampleRate), language)
         .then(result => {
-          if (overDetectorRef.current === detector && result.endOfTurn && recordingRef.current) {
+          if (!manualOpenRef.current && overDetectorRef.current === detector && result.endOfTurn && recordingRef.current) {
             stopOverDetector()
             stopRecording()
           }
@@ -414,13 +442,13 @@ function Interview({ sessionId, voiceStart, onVoiceChange, onSessionsChanged, on
   }
 
   async function startRecording() {
-    if (!handsFreeRef.current || !payload || payload.session.status === 'ended' || recordingRef.current || startingRecordingRef.current !== null || busyRef.current || finalizingRef.current) return
+    if (manualOpenRef.current || !handsFreeRef.current || !payload || payload.session.status === 'ended' || recordingRef.current || startingRecordingRef.current !== null || busyRef.current || finalizingRef.current) return
     const generation = voiceGenerationRef.current
     startingRecordingRef.current = generation
     try {
       setError(''); setLiveTranscript(''); finalizingRef.current = false
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-      if (!handsFreeRef.current || generation !== voiceGenerationRef.current) {
+      if (manualOpenRef.current || !handsFreeRef.current || generation !== voiceGenerationRef.current) {
         stream.getTracks().forEach(track => track.stop())
         return
       }
@@ -603,6 +631,7 @@ function Interview({ sessionId, voiceStart, onVoiceChange, onSessionsChanged, on
         <button className="primary send" onClick={() => void sendText()} disabled={!text.trim() || payload.session.status === 'ended' || isBusy}>{isBusy ? '送信中…' : '送信'}</button>
       </div>
       {handsFree && <p className="voice-help">回答の最後に「どうぞ」または「オーバー」と話してください。</p>}
+      {controls}
     </footer>
   </section>
 }
@@ -691,6 +720,9 @@ function App() {
   const [startError, setStartError] = useState('')
   const [closingMessage, setClosingMessage] = useState('')
   const [voiceStart, setVoiceStart] = useState(false)
+  const [manualOpen, setManualOpen] = useState(false)
+  const [manualSaving, setManualSaving] = useState(false)
+  const [manualError, setManualError] = useState('')
   const initialSessionResolved = useRef(false)
   const startingSessionRef = useRef(false)
   const pendingStartRef = useRef<string | null>(null)
@@ -731,6 +763,7 @@ function App() {
     restoredSessionRef.current = saved?.sessionId ?? null
     pendingStartRef.current = saved?.pendingStartId ?? null
     setAccount(value)
+    setManualOpen(false); setManualError('')
     setSelectedId(saved?.sessionId ?? null)
     setVoiceStart(saved?.voice ?? false)
     setLanguage(saved?.language ?? 'ja')
@@ -756,8 +789,25 @@ function App() {
     saveWorkspace(account.id, { sessionId: selectedId, view, language, voice: voiceStart, pendingStartId: pendingStartRef.current })
   }, [account, sessionsLoaded, selectedId, view, language, voiceStart, isStarting])
 
+  const needsManual = Boolean(account?.role === 'operator' && !account.manualAcknowledged && sessionsLoaded
+    && !sessions.some(session => session.account_id === account.id) && !selectedId)
+  const manualVisible = manualOpen || needsManual
+  const closeManual = useCallback(async () => {
+    if (manualSaving) return
+    if (!needsManual) { setManualOpen(false); return }
+    setManualSaving(true); setManualError('')
+    try {
+      const result = await api<{ account: Account }>('/api/me/manual', { method: 'POST' })
+      setAccount(current => current?.id === result.account.id ? result.account : current)
+      setManualOpen(false)
+    } catch (caught) {
+      if (caught instanceof ApiError && caught.status === 401) checkAuthentication()
+      else setManualError('確認を保存できませんでした。接続を確認して、もう一度お試しください。')
+    } finally { setManualSaving(false) }
+  }, [manualSaving, needsManual, checkAuthentication])
+
   async function createSession(voice = false) {
-    if (!account || startingSessionRef.current || savingSessionId || !sessionsLoaded || (selectedId && sessions.some(item => item.id === selectedId && item.status === 'running'))) return
+    if (!account || manualVisible || startingSessionRef.current || savingSessionId || !sessionsLoaded || (selectedId && sessions.some(item => item.id === selectedId && item.status === 'running'))) return
     startingSessionRef.current = true
     setVoiceStart(voice)
     setIsStarting(true); setStartError('')
@@ -784,20 +834,22 @@ function App() {
   if (!account) return <Login onLogin={acceptAccount} />
 
   const inInterview = view === 'interview'
-  const navigationLocked = isStarting || Boolean(savingSessionId) || !sessionsLoaded
-  const standbyControls = <details className="standby-settings"><summary>設定・履歴</summary>
+  const navigationLocked = isStarting || Boolean(savingSessionId) || !sessionsLoaded || manualVisible
+  const sessionRunning = Boolean(selectedId && sessions.some(item => item.id === selectedId && item.status === 'running'))
+  const standbyControls = <div className="interview-utilities"><details className="standby-settings"><summary>設定・履歴</summary>
     <p>{account.displayName}</p>
     <label>言語<select aria-label="インタビューの言語" value={language} onChange={event => setLanguage(event.target.value as Language)} disabled={navigationLocked}>{Object.entries(languageLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
-    <label>セッション履歴<select aria-label="セッション履歴" value="" disabled={navigationLocked} onChange={event => { if (event.target.value) { setVoiceStart(false); setSelectedId(event.target.value); setView('interview') } }}><option value="">履歴を選択</option>{sessions.map(item => <option key={item.id} value={item.id}>{item.title} · {item.status}</option>)}</select></label>
-    {account.role === 'admin' && <button onClick={() => setView('admin')} disabled={navigationLocked}>ID発行・管理画面</button>}
-    <button onClick={signOut} disabled={navigationLocked}>ログアウト</button>
-  </details>
+    <label>セッション履歴<select aria-label="セッション履歴" value="" disabled={navigationLocked || sessionRunning} onChange={event => { if (event.target.value) { setVoiceStart(false); setSelectedId(event.target.value); setView('interview') } }}><option value="">履歴を選択</option>{sessions.map(item => <option key={item.id} value={item.id}>{item.title} · {item.status}</option>)}</select></label>
+    {account.role === 'admin' && <button onClick={() => setView('admin')} disabled={navigationLocked || sessionRunning}>ID発行・管理画面</button>}
+    <button onClick={signOut} disabled={navigationLocked || sessionRunning}>ログアウト</button>
+  </details><button className="manual-trigger" onClick={() => { setManualError(''); setManualOpen(true) }}>操作マニュアル</button></div>
   return <div className={`app-shell ${inInterview ? 'interview-app' : ''}`}>
-    <aside className="sidebar"><div className="sidebar-brand"><span>AI</span><strong>AudioInterview</strong></div><button onClick={() => setView('interview')} disabled={navigationLocked}>インタビュー画面</button>{account.role === 'admin' && <button className={`admin-entry ${view === 'admin' ? 'selected' : ''}`} onClick={() => setView('admin')} disabled={navigationLocked}>⚙ ID発行・管理画面</button>}<button className="new-session" onClick={() => { setView('interview'); void createSession() }} disabled={navigationLocked || Boolean(selectedId && sessions.some(item => item.id === selectedId && item.status === 'running'))}>{isStarting ? 'インタビューを準備中…' : savingSessionId ? 'インタビューを記録中…' : '＋ 新しいインタビュー'}</button><label className="language-picker">言語<select value={language} onChange={event => setLanguage(event.target.value as Language)} disabled={navigationLocked}>{Object.entries(languageLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+    <aside className="sidebar" inert={manualVisible}><div className="sidebar-brand"><span>AI</span><strong>AudioInterview</strong></div><button onClick={() => setView('interview')} disabled={navigationLocked}>インタビュー画面</button><button className="manual-trigger" onClick={() => setManualOpen(true)}>操作マニュアル</button>{account.role === 'admin' && <button className={`admin-entry ${view === 'admin' ? 'selected' : ''}`} onClick={() => setView('admin')} disabled={navigationLocked}>⚙ ID発行・管理画面</button>}<button className="new-session" onClick={() => { setView('interview'); void createSession() }} disabled={navigationLocked || Boolean(selectedId && sessions.some(item => item.id === selectedId && item.status === 'running'))}>{isStarting ? 'インタビューを準備中…' : savingSessionId ? 'インタビューを記録中…' : '＋ 新しいインタビュー'}</button><label className="language-picker">言語<select value={language} onChange={event => setLanguage(event.target.value as Language)} disabled={navigationLocked}>{Object.entries(languageLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
       <nav><p>セッション</p>{sessions.map(item => <button key={item.id} className={selectedId === item.id && view === 'interview' ? 'selected' : ''} onClick={() => { setSelectedId(item.id); setView('interview') }} disabled={navigationLocked}><span>{item.title}</span><small>{languageLabels[item.language]} · {item.status}</small></button>)}</nav>
       <div className="sidebar-bottom"><div className="account-chip"><span className="avatar small">{account.displayName.slice(0, 1)}</span><div><strong>{account.displayName}</strong><small>{account.id}</small></div><button title="ログアウト" onClick={signOut} disabled={navigationLocked}>↪</button></div></div>
     </aside>
-    <main className="workspace">{sessionsError && <div className="connection-error" role="alert"><p>{sessionsError}</p><button onClick={() => void loadSessions()}>セッション一覧を再確認</button></div>}{startError && <p className="error-message" role="alert">{startError}</p>}{view === 'admin' && !savingSessionId ? <AdminPanel onOpenSession={id => { setSelectedId(id); setView('interview') }} /> : selectedId && sessionsLoaded && !savingSessionId ? <Interview key={selectedId} sessionId={selectedId} voiceStart={voiceStart} onVoiceChange={setVoiceStart} onSessionsChanged={loadSessions} onExit={exitInterview} onCompleted={completeInterview} /> : <InterviewStandby disabled={navigationLocked} starting={isStarting} savingSessionId={savingSessionId} closing={closingMessage} language={language} onStart={createSession} onFinished={finishSaving} onAuthRequired={checkAuthentication} controls={standbyControls} />}</main>
+    <main className="workspace" inert={manualVisible}>{sessionsError && <div className="connection-error" role="alert"><p>{sessionsError}</p><button onClick={() => void loadSessions()}>セッション一覧を再確認</button></div>}{startError && <p className="error-message" role="alert">{startError}</p>}{view === 'admin' && !savingSessionId ? <AdminPanel onOpenSession={id => { setSelectedId(id); setView('interview') }} /> : selectedId && sessionsLoaded && !savingSessionId ? <Interview key={selectedId} sessionId={selectedId} voiceStart={voiceStart} manualOpen={manualVisible} controls={standbyControls} onVoiceChange={setVoiceStart} onSessionsChanged={loadSessions} onExit={exitInterview} onCompleted={completeInterview} /> : <InterviewStandby disabled={navigationLocked} starting={isStarting} savingSessionId={savingSessionId} closing={closingMessage} language={language} onStart={createSession} onFinished={finishSaving} onAuthRequired={checkAuthentication} controls={standbyControls} />}</main>
+    {manualVisible && <OperationManual firstTime={needsManual} saving={manualSaving} error={manualError} onClose={closeManual} />}
   </div>
 }
 

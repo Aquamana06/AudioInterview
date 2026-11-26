@@ -49,4 +49,6 @@ npm run build
 
 データベースの migration SQL は `backend/db/migrations/` にあります。
 
+対象者へ配布する [操作マニュアルPDF](frontend/public/manual/interview-manual.pdf) と [依頼文・マニュアルの更新方法](docs/operation-manual/README.md) を用意しています。サイト内では初回インタビューの前に表示し、その後は「設定・履歴」の横の「操作マニュアル」から参照できます。
+
 回答音声と音声パスを保存し、インタビュー終了時に会話JSONを `backend/instance/interviews/` へ自動保存します。参照・JSON出力・音声付き取り出し・DBバックアップのコマンドは [データ保存・取り出しのREADME](docs/data-storage/README.md) を参照してください。

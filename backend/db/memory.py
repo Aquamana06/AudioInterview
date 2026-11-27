@@ -1,6 +1,9 @@
+import asyncio
 import json
 import sqlite3
 import unicodedata
+from datetime import datetime, timedelta, timezone
+from threading import Lock
 from typing import Any
 
 from config import load_config
@@ -10,6 +13,8 @@ from interview.diagnostics import log_event, logger
 
 
 CONFIG = load_config("db")["memory"]
+_finalizing: set[str] = set()
+_finalizing_lock = Lock()
 
 
 def get_session_memory(connection: sqlite3.Connection, session_id: str) -> dict:
@@ -48,26 +53,31 @@ def ensure_session_memory(account_id: str, session_id: str, messages: list[dict]
     log_event("memory_record_saved", session_id, summary=summary)
 
 
-async def recover_session_memories() -> None:
+async def recover_session_memories(*, retry_only: bool = False) -> None:
     """Resume interrupted/failed jobs and legacy ended sessions without summaries."""
+    if retry_only and not configured():
+        return
+    retry_filter = ""
+    parameters: tuple = ()
+    if retry_only:
+        cutoff = (datetime.now(timezone.utc) - timedelta(seconds=CONFIG["retry_delay_seconds"]))
+        cutoff = cutoff.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        retry_filter = " AND COALESCE(j.updated_at, s.ended_at, s.updated_at)<=?"
+        parameters = (cutoff, CONFIG["retry_batch_size"])
     with database() as connection:
         sessions = [dict(row) for row in connection.execute(
             """SELECT s.* FROM interview_sessions s
                LEFT JOIN longitudinal_session_summaries m ON m.session_id=s.id
                LEFT JOIN session_memory_jobs j ON j.session_id=s.id
-               WHERE s.status='ended' AND (m.summary IS NULL OR m.summary='' OR j.status IN ('pending', 'fallback'))
-               ORDER BY s.ended_at""",
+               WHERE s.status='ended' AND (m.summary IS NULL OR m.summary='' OR j.status IN ('pending', 'fallback'))"""
+            + retry_filter + " ORDER BY COALESCE(j.updated_at, s.ended_at), s.id"
+            + (" LIMIT ?" if retry_only else ""), parameters,
         )]
     # Save excerpts for every pending session before starting model inference.
     for session in sessions:
         with database() as connection:
             messages = list_messages(connection, session["id"])
         ensure_session_memory(session["account_id"], session["id"], messages)
-        with database() as connection:
-            connection.execute(
-                "UPDATE session_memory_jobs SET status='pending', updated_at=? WHERE session_id=? AND status='fallback'",
-                (now_iso(), session["id"]),
-            )
     for session in sessions:
         try:
             with database() as connection:
@@ -77,9 +87,23 @@ async def recover_session_memories() -> None:
             logger.exception("[interview] session_id=%s 記憶の復旧に失敗しました", session["id"])
             with database() as connection:
                 connection.execute(
-                    "UPDATE session_memory_jobs SET status='fallback', updated_at=? WHERE session_id=? AND status='pending'",
+                    "UPDATE session_memory_jobs SET status='fallback', updated_at=? WHERE session_id=? AND status!='ready'",
                     (now_iso(), session["id"]),
                 )
+
+
+async def run_memory_recovery() -> None:
+    """Retry failed jobs while serving, keeping fallback records usable."""
+    if not CONFIG.get("recovery_enabled", True):
+        return
+    retry_only = False
+    while True:
+        try:
+            await recover_session_memories(retry_only=retry_only)
+        except Exception:
+            logger.exception("[interview] 記憶の再試行キューの確認に失敗しました。次回再試行します")
+        retry_only = True
+        await asyncio.sleep(CONFIG["retry_poll_seconds"])
 
 
 def empty_profile() -> dict[str, Any]:
@@ -384,7 +408,23 @@ MEMORY_SCHEMA = {
 
 
 async def finalize_session(account_id: str, session_id: str, language: str, messages: list[dict]) -> None:
-    ensure_session_memory(account_id, session_id, messages)
+    # Startup recovery, periodic retries and end requests share this guard.
+    with _finalizing_lock:
+        if session_id in _finalizing:
+            return
+        _finalizing.add(session_id)
+    try:
+        ensure_session_memory(account_id, session_id, messages)
+        with database() as connection:
+            if get_session_memory(connection, session_id)["status"] == "ready":
+                return
+        await _finalize_session(account_id, session_id, language, messages)
+    finally:
+        with _finalizing_lock:
+            _finalizing.discard(session_id)
+
+
+async def _finalize_session(account_id: str, session_id: str, language: str, messages: list[dict]) -> None:
     if not configured():
         with database() as connection:
             connection.execute("UPDATE session_memory_jobs SET status='fallback', updated_at=? WHERE session_id=? AND status!='ready'",
@@ -393,13 +433,17 @@ async def finalize_session(account_id: str, session_id: str, language: str, mess
         return
     log_event("memory_finalizing", session_id)
     memory = load_participant_memory(account_id)
+    with database() as connection:
+        retrying = get_session_memory(connection, session_id)["status"] == "fallback"
+    limits = ("要約は150字程度、nodesとedgesはそれぞれ最大3件" if retrying
+              else "要約は300字程度、nodesとedgesはそれぞれ最大6件")
     transcript = "\n".join(f"[{item['id']}] {item['role']}: {item['content']}" for item in messages)
     prompt = f"""次のインタビュー記録を、参加者の将来の会話で参照するために整理してください。書かれていない事実は作らず、profile_patchは新しく明示された情報だけにしてください。nodesは具体的な業務、状況、調整行動、理由、判断基準、価値観、経験源、個人的意味を含めます。edgesは明示された因果や関係だけにします。evidence_message_idsは根拠のメッセージIDを使います。
 言語: {language}
 既存プロフィール: {json.dumps(memory['profile'], ensure_ascii=False)}
 domain_knowledgeは、参加者が明示的に教えた作業名・略語・現場用語の意味や、業務を理解するための定義だけを別の用語集として保存します。例えば『全交換とはカラフェとピッチャーを交換する作業』です。termは本人の用語、meaningは説明された意味、scopeはその意味が通用する職場・業務の範囲（特定できなければ空文字）にします。今回の実施間隔や一時的な状態、本人の判断・価値観は用語の定義に混ぜません。聞き手だけの推測や未回答の確認質問を採用せず、evidence_message_idsには今回その意味を説明・訂正したuserのIDを付けます。既存の同じ意味は再出力せず、説明が訂正された場合は同じtermとscopeで新しいmeaningを出してください。新しく説明された用語は省略せず保存し、なければ空配列にします。
 既存のドメイン知識: {json.dumps(memory['domain_knowledge'], ensure_ascii=False)}
-要約は300字程度、nodesは重要なものを最大6件、edgesは最大6件、各 evidence_message_ids は最大2件に絞り、JSONを最後まで出力してください。既存の記憶の再出力は不要です。
+{limits}、各 evidence_message_ids は最大2件に絞り、JSONを最後まで出力してください。既存の記憶の再出力は不要です。
 既存要約: {json.dumps([item for item in memory['recent_summaries'] if item['session_id'] != session_id][:CONFIG['prompt_summaries']], ensure_ascii=False)}
 会話: {transcript}"""
     try:
@@ -412,7 +456,12 @@ domain_knowledgeは、参加者が明示的に教えた作業名・略語・現�
         with database() as connection:
             connection.execute("UPDATE session_memory_jobs SET status='fallback', updated_at=? WHERE session_id=? AND status!='ready'",
                                (now_iso(), session_id))
-        log_event("memory_fallback", session_id, reason="要約生成に失敗したため発話抜粋を保持します。再起動時に再試行します。")
+        retry_enabled = CONFIG.get("recovery_enabled", True)
+        log_event("memory_fallback", session_id,
+                  reason="要約生成に失敗したため発話抜粋を保持します。" + (
+                      "稼働中に自動で再試行します。" if retry_enabled else "自動再試行は停止しています。"),
+                  retry_enabled=retry_enabled,
+                  retry_after_seconds=CONFIG["retry_delay_seconds"] if retry_enabled else None)
         return
     log_event("memory_saved", session_id, summary=update.get("summary", ""),
               profile=_merge_profile(memory["profile"], update.get("profile_patch", {})),

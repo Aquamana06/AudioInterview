@@ -3,8 +3,9 @@ from unittest.mock import AsyncMock, patch
 
 from fastapi.testclient import TestClient
 
-from backend_test_support import DatabaseTestCase, app, database
-from interview.agent import initial_state
+from backend_test_support import DatabaseTestCase, app, database, irregular_evidence
+from db.database import update_state
+from interview.agent import empty_extraction, initial_state
 
 
 class APITests(DatabaseTestCase):
@@ -143,6 +144,48 @@ class APITests(DatabaseTestCase):
         self.assertEqual(len(ended["messages"]), len(repeated["messages"]))
         self.finalize.assert_awaited_once()
         self.assertEqual(self.client.post(path + "/messages", json={"maskedText": "続き"}).status_code, 409)
+
+    def test_twentieth_answer_is_saved_and_forces_end_without_a_manual_end_request(self):
+        self.login()
+        session_id = self.session()
+        path = f"/api/sessions/{session_id}"
+        self.client.post(path + "/start")
+        with database() as connection:
+            update_state(connection, session_id, {**initial_state(), "interview_mode": "interview", "turn_count": 18}, "running")
+        with patch("api.routes.extract_turn", AsyncMock(return_value=empty_extraction())), \
+             patch("interview.agent.configured", return_value=False):
+            nineteenth = self.client.post(path + "/messages", json={"maskedText": "19回目の回答"}).json()
+            twentieth = self.client.post(path + "/messages", json={"maskedText": "20回目の回答"}).json()
+        self.assertEqual(nineteenth["stateLabel"], "running")
+        self.assertEqual(twentieth["session"]["status"], "ended")
+        self.assertEqual(twentieth["state"]["turn_count"], 20)
+        self.assertEqual([message["content"] for message in twentieth["messages"] if message["role"] == "user"],
+                         ["19回目の回答", "20回目の回答"])
+        self.finalize.assert_awaited_once()
+        self.assertEqual(self.client.post(path + "/messages", json={"maskedText": "21回目の回答"}).status_code, 409)
+
+    def test_third_partial_irregular_answer_ends_using_a_persisted_streak(self):
+        self.login()
+        session_id = self.session()
+        path = f"/api/sessions/{session_id}"
+        self.client.post(path + "/start")
+        state = {**initial_state(), "interview_mode": "interview", "target_work": "設備点検",
+                 "practice_covered": True, "task_depth": 5, "high_depth_turn_count": 2,
+                 "irregular_evidence": irregular_evidence(2)}
+        state["task_coverage_by_fram"] = {key: 0.1 for key in state["task_coverage_by_fram"]}
+        with database() as connection:
+            update_state(connection, session_id, state, "running")
+        with patch("api.routes.extract_turn", AsyncMock(return_value=empty_extraction())), \
+             patch("interview.agent.configured", return_value=False):
+            for count in range(1, 4):
+                response = self.client.post(path + "/messages", json={"maskedText": "回答です"})
+                self.assertEqual(response.status_code, 200, response.text)
+                result = response.json()
+                self.assertEqual(result["state"]["irregular_partial_turn_count"], count)
+                self.assertEqual(result["stateLabel"], "running" if count < 3 else "end")
+        self.assertEqual(result["session"]["status"], "ended")
+        self.assertEqual(result["state"]["irregular_coverage"], 0.4)
+        self.finalize.assert_awaited_once()
 
     def test_pending_memory_blocks_creation_and_opening_until_recorded(self):
         self.login()

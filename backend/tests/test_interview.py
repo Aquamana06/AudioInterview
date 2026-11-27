@@ -67,6 +67,65 @@ class InterviewTests(unittest.TestCase):
                 else:
                     self.assertIn("圧を下げて", result["guide"]["guidance"])
 
+    def test_unknown_or_unconsidered_answer_records_the_point_and_stops_the_dive(self):
+        question = "故障対応を先にするのはなぜですか？"
+        for answer in ("わかんないです", "そこまで考えてないです", "答えたくないです"):
+            with self.subTest(answer=answer):
+                state = initial_state()
+                state["target_work"] = "設備点検"
+                state["deep_dive"] = {"anchor": "故障対応が優先", "return_target_work": "設備点検", "stage": "clarify"}
+                with patch("interview.agent.configured", return_value=False):
+                    result = asyncio.run(run_interview_turn(state, answer, [{"role": "system", "content": question}], "ja",
+                                                           extracted=empty_extraction()))
+                self.assertIsNone(result["state"]["deep_dive"])
+                self.assertEqual(result["state"]["unanswered_points"], [question])
+                self.assertIn("別の場面・行動・観点", result["guide"]["guidance"])
+                self.assertNotEqual(result["text"], question)
+                self.assertEqual(result["state"]["resistance_count"], 0)
+                self.assertEqual(initial_state()["unanswered_points"], [])
+
+    def test_unanswered_point_survives_history_truncation_and_exact_reask_is_replaced(self):
+        question = "その判断を大事にしている理由は何ですか？"
+        state = initial_state()
+        state.update(target_work="設備点検", unanswered_points=[question])
+        history = [{"role": "system", "content": question}] + [{"role": "user", "content": "別の話です"}] * 35
+        with patch("interview.agent.configured", return_value=True), \
+             patch("interview.agent.complete", AsyncMock(return_value=question)) as generate:
+            result = asyncio.run(run_interview_turn(state, "次は巡回しました", history, "ja", extracted=empty_extraction()))
+        self.assertIn(question, generate.call_args.args[0])
+        self.assertIn("coverageやdepthの不足よりこの制約を優先", generate.call_args.args[0])
+        self.assertEqual(result["state"]["unanswered_points"], [question])
+        self.assertNotEqual(result["text"], question)
+
+    def test_describing_how_to_handle_unknowns_is_not_an_unanswered_point(self):
+        for answer in ("分からないときは資料を確認します", "分からない場合は同僚に聞きます", "「分からない」と新人に言われたので説明しました"):
+            with self.subTest(answer=answer), patch("interview.agent.configured", return_value=False):
+                result = asyncio.run(run_interview_turn(initial_state(), answer, [], "ja", extracted=empty_extraction()))
+                self.assertEqual(result["state"]["unanswered_points"], [])
+
+    def test_twentieth_answer_ends_even_during_a_dive_or_user_question(self):
+        for language in ("ja", "en", "de"):
+            with self.subTest(language=language):
+                state = initial_state()
+                state.update(turn_count=19, deep_dive={"anchor": "故障対応", "return_target_work": "設備点検", "stage": "reason"})
+                with patch("interview.agent.complete", AsyncMock()) as generate:
+                    result = asyncio.run(run_interview_turn(state, "どういう意味ですか？", [], language,
+                                                           extracted={**empty_extraction(), "user_questions": ["どういう意味？"]}))
+                self.assertEqual(result["state"]["turn_count"], 20)
+                self.assertEqual(result["stateLabel"], "end")
+                self.assertEqual(result["text"], ENDINGS[language])
+                self.assertIsNone(result["state"]["deep_dive"])
+                self.assertEqual(result["guide"]["end_reason"], "turn_limit")
+                generate.assert_not_awaited()
+
+    def test_nineteenth_answer_does_not_end_only_because_of_the_limit(self):
+        state = initial_state()
+        state["turn_count"] = 18
+        with patch("interview.agent.configured", return_value=False):
+            result = asyncio.run(run_interview_turn(state, "特にありません", [], "ja", extracted=empty_extraction()))
+        self.assertEqual(result["stateLabel"], "running")
+        self.assertEqual(result["state"]["turn_count"], 19)
+
     def test_automatic_end_waits_for_pending_reason_answer(self):
         state = initial_state()
         state.update(target_work="設備点検", practice_covered=True, task_depth=5, high_depth_turn_count=2,
@@ -155,7 +214,7 @@ class InterviewTests(unittest.TestCase):
                               "return_target_work": "ダスターの交換"}
         result = self.run_dive_turn(state, "次の人が作業しやすいようにしています")
         self.assertEqual(result["guide"]["fram_focus"], "precondition")
-        self.assertEqual(result["text"], "ダスターの交換を始めるには、現場がどんな状態になっている必要がありますか？")
+        self.assertEqual(result["text"], "ダスターの交換に取りかかる前に、普段どのようなことをしていますか？")
         self.assertIsNone(result["state"]["deep_dive"])
 
     def test_return_from_anchor_uses_coverage_threshold_and_preserves_depth_five_transition(self):
@@ -314,6 +373,51 @@ class InterviewTests(unittest.TestCase):
         self.assertIsNone(result["state"]["deep_dive"])
         self.assertEqual(result["stateLabel"], "running")
         self.assertIn("予定どおりに進まない", result["guide"]["guidance"])
+
+    def test_third_consecutive_point_four_ends_without_inventing_deeper_evidence(self):
+        state = initial_state()
+        state.update(target_work="設備点検", practice_covered=True, task_depth=5, high_depth_turn_count=2,
+                     irregular_evidence=irregular_evidence(2))
+        state["task_coverage_by_fram"] = {key: 0.1 for key in state["task_coverage_by_fram"]}
+        for count in range(1, 4):
+            result = self.run_dive_turn(state, "回答です", deep_dive_opportunity=True, deep_dive_anchor="安全を優先する")
+            state = result["state"]
+            self.assertEqual(state["irregular_coverage"], 0.4)
+            self.assertEqual(state["irregular_partial_turn_count"], count)
+            self.assertEqual(result["stateLabel"], "running" if count < 3 else "end")
+            self.assertEqual(state["irregular_evidence"]["irregular_deeper_reasons"], [])
+
+    def test_partial_irregular_streak_does_not_bypass_other_end_conditions(self):
+        for missing in ("coverage", "depth"):
+            with self.subTest(missing=missing):
+                state = initial_state()
+                state.update(target_work="設備点検", practice_covered=True,
+                             task_depth=3 if missing == "depth" else 5, high_depth_turn_count=2,
+                             irregular_evidence=irregular_evidence(2))
+                if missing != "coverage":
+                    state["task_coverage_by_fram"] = {key: 0.1 for key in state["task_coverage_by_fram"]}
+                for _ in range(3):
+                    result = self.run_dive_turn(state, "回答です")
+                    state = result["state"]
+                self.assertEqual(state["irregular_partial_turn_count"], 3)
+                self.assertEqual(result["stateLabel"], "running")
+
+    def test_point_two_does_not_trigger_partial_end_and_full_coverage_resets_streak(self):
+        state = initial_state()
+        state.update(target_work="設備点検", practice_covered=True, task_depth=5, high_depth_turn_count=2,
+                     irregular_evidence=irregular_evidence(1))
+        state["task_coverage_by_fram"] = {key: 0.1 for key in state["task_coverage_by_fram"]}
+        for _ in range(3):
+            state = self.run_dive_turn(state, "回答です")["state"]
+            self.assertEqual(state["irregular_partial_turn_count"], 0)
+            self.assertFalse(should_end(state))
+        for _ in range(2):
+            state = self.run_dive_turn(state, "事故を防ぐためです", irregular_reasons=["事故を防ぐため"])["state"]
+        self.assertEqual(state["irregular_partial_turn_count"], 2)
+        result = self.run_dive_turn(state, "仲間の信頼を守るためです", irregular_deeper_reasons=["仲間との信頼を大切にする"])
+        self.assertEqual(result["state"]["irregular_coverage"], 0.6)
+        self.assertEqual(result["state"]["irregular_partial_turn_count"], 0)
+        self.assertEqual(result["stateLabel"], "end")
 
     def test_asking_about_irregular_cases_alone_does_not_satisfy_the_end_condition(self):
         state = initial_state()

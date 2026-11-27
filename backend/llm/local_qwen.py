@@ -1,5 +1,6 @@
 """Resident, serialized local inference, warmed before the API accepts requests."""
 
+import logging
 from threading import Lock
 from typing import Any
 
@@ -41,7 +42,7 @@ def _load_model(model_id: str) -> None:
         raise RuntimeError("Restart the backend after changing the local LLM model")
 
 
-def _generate(prompt: str, model_id: str, *, warming: bool = False) -> str:
+def _generate(prompt: str, model_id: str, *, warming: bool = False, json_output: bool = False) -> str:
     import torch
 
     _load_model(model_id)
@@ -56,17 +57,26 @@ def _generate(prompt: str, model_id: str, *, warming: bool = False) -> str:
     ).to(_model.device)
     if inputs["input_ids"].shape[-1] > CONFIG["max_input_tokens"]:
         raise ValueError("Prompt exceeds max_input_tokens in llm/config.yaml")
-    generation = {**CONFIG["generation"], "max_new_tokens": int(setting(
-        "LOCAL_LLM_MAX_NEW_TOKENS", str(CONFIG["generation"]["max_new_tokens"]),
-    ))}
+    generation = {**CONFIG["generation"], **(CONFIG.get("json_generation", {}) if json_output else {})}
+    max_tokens = setting("LOCAL_LLM_MAX_NEW_TOKENS", str(generation["max_new_tokens"]))
+    if json_output:
+        max_tokens = setting("LOCAL_LLM_JSON_MAX_NEW_TOKENS", max_tokens)
+    generation["max_new_tokens"] = int(max_tokens)
+    if not generation.get("do_sample", False):
+        for key in ("temperature", "top_p", "top_k"):
+            generation.pop(key, None)
     if warming:
         # Two tokens exercise both prefill and cached autoregressive decoding.
         generation = {"max_new_tokens": 2, "min_new_tokens": 2, "do_sample": False}
     with torch.inference_mode():
         outputs = _model.generate(**inputs, **generation)
-    return _processor.decode(
-        outputs[0][inputs["input_ids"].shape[-1]:], skip_special_tokens=True,
-    ).strip()
+    generated_ids = outputs[0][inputs["input_ids"].shape[-1]:]
+    if not warming and len(generated_ids) >= generation["max_new_tokens"]:
+        logging.getLogger("audiointerview").warning(
+            "[llm] Output reached max_new_tokens=%s (json_output=%s); the response may be truncated",
+            generation["max_new_tokens"], json_output,
+        )
+    return _processor.decode(generated_ids, skip_special_tokens=True).strip()
 
 
 def warmup(model_id: str) -> None:
@@ -82,10 +92,10 @@ def warmup(model_id: str) -> None:
         _warmed_up = True
 
 
-def generate(prompt: str, model_id: str) -> str:
+def generate(prompt: str, model_id: str, *, json_output: bool = False) -> str:
     # Startup and requests share the same model and lock across event loops.
     with _lock:
-        return _generate(prompt, model_id)
+        return _generate(prompt, model_id, json_output=json_output)
 
 
 def is_ready(model_id: str) -> bool:

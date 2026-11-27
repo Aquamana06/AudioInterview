@@ -8,3 +8,8 @@ memory:
   prompt_summaries: 3
   fallback_answers: 12
   fallback_answer_chars: 160
+  # 起動時の復旧と稼働中の定期再試行を停止。再開するときだけ true にする。
+  recovery_enabled: false
+  retry_poll_seconds: 60
+  retry_delay_seconds: 300
+  retry_batch_size: 1

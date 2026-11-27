@@ -91,6 +91,27 @@ class ProfileTests(unittest.TestCase):
         self.assertFalse(result["state"]["profile_completed"])
         self.assertEqual(result["state"]["profile_end_reason"], "turn_limit")
 
+    def test_unknown_profile_point_is_remembered_and_not_asked_again(self):
+        question = "そのお仕事は何年目になりますか？"
+        state = {**initial_state(), "turn_count": 1}
+        with patch("interview.profile_agent.configured", return_value=True), \
+             patch("interview.profile_agent.complete_json", AsyncMock(return_value=profile_extraction(experience=[]))), \
+             patch("interview.profile_agent.complete", AsyncMock(return_value=question)) as generate:
+            result = asyncio.run(run_profile_turn(state, "よく分かりません", [{"role": "system", "content": question}], "ja", {}))
+        self.assertEqual(result["state"]["unanswered_points"], [question])
+        self.assertTrue(result["state"]["profile_experience_asked"])
+        self.assertNotEqual(result["text"], question)
+        self.assertIn(question, generate.call_args.args[0])
+
+    def test_profile_cannot_exceed_the_global_twenty_answer_limit(self):
+        state = {**initial_state(), "turn_count": 19}
+        with patch.dict(CONFIG, {"max_turns": 30}), \
+             patch("interview.profile_agent.configured", return_value=False):
+            result = asyncio.run(run_profile_turn(state, "回答です", [], "ja", {}))
+        self.assertEqual(result["stateLabel"], "end")
+        self.assertEqual(result["state"]["turn_count"], 20)
+        self.assertFalse(result["state"]["profile_completed"])
+
 
 class ProfileProgressionTests(DatabaseTestCase):
     def setUp(self):

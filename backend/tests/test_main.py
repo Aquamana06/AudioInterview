@@ -1,3 +1,4 @@
+import asyncio
 import contextlib
 import io
 import os
@@ -55,6 +56,24 @@ class EntrypointTests(unittest.TestCase):
 
 
 class StartupTests(unittest.IsolatedAsyncioTestCase):
+    async def test_background_recovery_runs_while_serving_and_stops_at_shutdown(self):
+        started, stopped = asyncio.Event(), asyncio.Event()
+
+        async def worker():
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                stopped.set()
+
+        with patch.object(main, 'initialize_database'), patch.object(main, 'ensure_admin'), \
+             patch.object(main, 'recover_archives'), patch.object(main, 'configured', return_value=False), \
+             patch.object(main.routes.local_whisper, 'warmup'), patch.object(main, 'run_memory_recovery', side_effect=worker):
+            async with main.lifespan(main.app):
+                await asyncio.wait_for(started.wait(), timeout=1)
+                self.assertFalse(stopped.is_set())
+            self.assertTrue(stopped.is_set())
+
     async def test_models_are_warmed_before_startup_completes(self):
         events = []
         with patch.object(main, 'initialize_database'), patch.object(main, 'ensure_admin'), \

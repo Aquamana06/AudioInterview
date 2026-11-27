@@ -1,10 +1,10 @@
 import asyncio
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, call, patch
 
 from backend_test_support import DatabaseTestCase, database
 from db.database import insert_message, list_messages
-from db.memory import (empty_profile, ensure_session_memory, finalize_session, get_session_memory,
-                       load_participant_memory, recover_session_memories, save_session_memory)
+from db.memory import (CONFIG, empty_profile, ensure_session_memory, finalize_session, get_session_memory,
+                       load_participant_memory, recover_session_memories, run_memory_recovery, save_session_memory)
 from interview.longitudinal import select_relevant
 
 
@@ -77,7 +77,7 @@ class MemoryTests(DatabaseTestCase):
             asyncio.run(finalize_session("admin", "fallback", "ja", fallback))
 
         async def recovered_summary(*args):
-            self.assertEqual(self.record("fallback")["status"], "pending")
+            self.assertEqual(self.record("fallback")["status"], "fallback")
             return {"summary": "復旧した要約", "nodes": [], "edges": []}
 
         with patch("db.memory.configured", return_value=True), \
@@ -89,6 +89,98 @@ class MemoryTests(DatabaseTestCase):
         self.assertEqual(self.record("ready")["summary"], "保存済み")
         self.assertIsNone(self.record("running")["summary"])
         self.assertEqual(self.record("fallback")["status"], "ready")
+
+    def test_failed_summary_is_retried_without_restart_and_uses_a_shorter_prompt(self):
+        messages = self.ended_session()
+        update = {"summary": "復旧した要約", "profile_patch": {"role": "設備担当"}, "nodes": [], "edges": []}
+        with patch("db.memory.configured", return_value=True), \
+             patch("db.memory.complete_json", AsyncMock(side_effect=[RuntimeError("invalid JSON"), update])) as generate, \
+             self.assertLogs("audiointerview", level="INFO"):
+            asyncio.run(finalize_session("admin", "memory_test", "ja", messages))
+            self.assertEqual(self.record()["status"], "fallback")
+            with database() as connection:
+                connection.execute("UPDATE session_memory_jobs SET updated_at='2000-01-01T00:00:00Z'")
+            asyncio.run(recover_session_memories(retry_only=True))
+        self.assertEqual(generate.await_count, 2)
+        self.assertIn("300字", generate.call_args_list[0].args[0])
+        self.assertIn("150字", generate.call_args_list[1].args[0])
+        self.assertEqual(self.record(), {"summary": "復旧した要約", "status": "ready"})
+        self.assertEqual(load_participant_memory("admin")["profile"]["role"], "設備担当")
+        with database() as connection:
+            self.assertEqual(list_messages(connection, "memory_test"), messages)
+
+    def test_periodic_recovery_waits_for_delay_and_processes_a_bounded_batch(self):
+        for session_id in ("oldest", "recent_failure", "newer", "ready"):
+            messages = self.ended_session(session_id)
+            ensure_session_memory("admin", session_id, messages)
+        with database() as connection:
+            connection.execute("UPDATE session_memory_jobs SET status='fallback'")
+            connection.execute("UPDATE session_memory_jobs SET updated_at='2000-01-01T00:00:00Z' WHERE session_id='oldest'")
+            connection.execute("UPDATE session_memory_jobs SET updated_at='2001-01-01T00:00:00Z' WHERE session_id='newer'")
+            connection.execute("UPDATE session_memory_jobs SET status='ready' WHERE session_id='ready'")
+
+        async def summarize(prompt, schema):
+            self.assertEqual(self.record("oldest")["status"], "fallback")
+            # A background retry must not block the next interview.
+            from api.routes import _require_memory_complete
+            _require_memory_complete("admin")
+            return {"summary": "復旧", "nodes": [], "edges": []}
+
+        with patch("db.memory.configured", return_value=True), \
+             patch("db.memory.complete_json", AsyncMock(side_effect=summarize)) as generate:
+            asyncio.run(recover_session_memories(retry_only=True))
+        generate.assert_awaited_once()
+        self.assertEqual(self.record("oldest")["status"], "ready")
+        self.assertEqual(self.record("newer")["status"], "fallback")
+        self.assertEqual(self.record("recent_failure")["status"], "fallback")
+
+    def test_concurrent_finalization_of_the_same_session_runs_once(self):
+        messages = self.ended_session()
+
+        async def scenario():
+            started, release = asyncio.Event(), asyncio.Event()
+
+            async def summarize(*args):
+                started.set()
+                await release.wait()
+                return {"summary": "一度だけ生成", "nodes": [], "edges": []}
+
+            with patch("db.memory.configured", return_value=True), \
+                 patch("db.memory.complete_json", AsyncMock(side_effect=summarize)) as generate:
+                task = asyncio.create_task(finalize_session("admin", "memory_test", "ja", messages))
+                await started.wait()
+                try:
+                    await finalize_session("admin", "memory_test", "ja", messages)
+                    generate.assert_awaited_once()
+                finally:
+                    release.set()
+                    await task
+                # A completed job must also remain untouched by later retry calls.
+                await finalize_session("admin", "memory_test", "ja", messages)
+                generate.assert_awaited_once()
+
+        asyncio.run(scenario())
+        self.assertEqual(self.record()["status"], "ready")
+
+    def test_recovery_worker_keeps_running_after_a_queue_error_and_can_be_cancelled(self):
+        with patch.dict(CONFIG, {"recovery_enabled": True}), \
+             patch("db.memory.recover_session_memories", AsyncMock(side_effect=[RuntimeError("database busy"), None])) as recover, \
+             patch("db.memory.asyncio.sleep", AsyncMock(side_effect=[None, asyncio.CancelledError])) as sleep, \
+             self.assertLogs("audiointerview", level="ERROR"):
+            with self.assertRaises(asyncio.CancelledError):
+                asyncio.run(run_memory_recovery())
+        self.assertEqual(recover.await_args_list, [call(retry_only=False), call(retry_only=True)])
+        self.assertEqual(sleep.await_count, 2)
+
+    def test_disabled_recovery_does_not_run_at_startup_or_schedule_periodic_retries(self):
+        with patch.dict(CONFIG, {"recovery_enabled": False}), \
+             patch("db.memory.recover_session_memories", AsyncMock()) as recover, \
+             patch("db.memory.asyncio.sleep", AsyncMock()) as sleep:
+            # Starting the backend again must not restart the stopped recovery.
+            asyncio.run(run_memory_recovery())
+            asyncio.run(run_memory_recovery())
+        recover.assert_not_awaited()
+        sleep.assert_not_awaited()
 
     def test_unexpected_recovery_failure_preserves_record_and_releases_pending_state(self):
         self.ended_session()

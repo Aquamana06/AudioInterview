@@ -171,6 +171,22 @@ class ArchiveAPITests(DatabaseTestCase):
 
 
 class ExportCommandTests(DatabaseTestCase):
+    def test_date_filter_uses_japan_calendar_day_and_includes_running_sessions(self):
+        cases = [
+            ("before", "2026-11-26T14:59:59Z", "ended"),
+            ("start", "2026-11-26T15:00:00Z", "running"),
+            ("last", "2026-11-27T14:59:59Z", "ended"),
+            ("after", "2026-11-27T15:00:00Z", "ended"),
+        ]
+        for session_id, started_at, status in cases:
+            self.add_session(session_id)
+            with database() as db:
+                db.execute("UPDATE interview_sessions SET started_at=?, status=? WHERE id=?", (started_at, status, session_id))
+        output = database_path().parent / "today.json"
+        with contextlib.redirect_stdout(io.StringIO()):
+            interviews_command(["export", "--all", "--status", "all", "--date", "2026-11-27", "--output", str(output)])
+        self.assertEqual({document["session_id"] for document in json.loads(output.read_text())}, {"start", "last"})
+
     def test_current_display_name_selects_only_that_accounts_full_history(self):
         with database() as db:
             db.execute("INSERT INTO accounts (id, role, display_name) VALUES ('mana_id', 'operator', '以前の名前')")

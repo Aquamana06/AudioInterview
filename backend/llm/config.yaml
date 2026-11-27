@@ -15,3 +15,7 @@ generation:
   temperature: 0.7
   top_p: 0.8
   top_k: 20
+# 要約・構造化抽出は通常の質問文より長いため、別の出力枠を使う。
+json_generation:
+  max_new_tokens: 4096
+  do_sample: false

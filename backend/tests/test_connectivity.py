@@ -11,7 +11,7 @@ from interview.agent import _history_text, empty_extraction
 from interview.profile_agent import CONFIG as PROFILE_CONFIG, PROFILE_FIELDS
 
 
-def model_response(prompt, model_id):
+def model_response(prompt, model_id, *, json_output=False):
     if '"profile_patch"' in prompt:
         return json.dumps({
             'summary': '設備 点検を担当',

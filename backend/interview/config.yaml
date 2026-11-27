@@ -11,8 +11,11 @@ profile:
   min_turns: 7
   min_covered_fields: 5
 ending:
+  max_turns: 20
   min_task_coverage: 0.45
   min_irregular_coverage: 0.6
+  partial_irregular_coverage: 0.4
+  partial_irregular_turns: 3
   high_depth: 5
   high_depth_turns: 2
   complete_task_coverage: 1.0

@@ -25,7 +25,7 @@ from api import routes
 from api.settings import BACKEND_ROOT
 from db.database import initialize_database
 from db.archive import recover_archives
-from db.memory import recover_session_memories
+from db.memory import run_memory_recovery
 from llm.client import configured, model as llm_model, status as llm_status
 from llm.local_qwen import warmup as warmup_qwen
 from interview.diagnostics import configure_logging
@@ -45,7 +45,7 @@ async def lifespan(_: FastAPI):
     logger.info("Warming Whisper: %s", routes.local_whisper.model_name)
     await asyncio.to_thread(routes.local_whisper.warmup)
     logger.info("Models ready; startup warmup took %.1fs", time.monotonic() - started)
-    recovery = asyncio.create_task(recover_session_memories())
+    recovery = asyncio.create_task(run_memory_recovery())
     try:
         yield
     finally:

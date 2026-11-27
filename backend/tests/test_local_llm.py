@@ -7,7 +7,7 @@ from pathlib import Path
 import sys
 import types
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -52,6 +52,50 @@ class LocalLLMTests(unittest.TestCase):
         self.assertEqual(result, {'answer': 'ok'})
         self.assertIn('"type": "object"', generate.call_args.args[0])
         self.assertEqual(generate.call_args.args[1], 'Qwen/Qwen3.6-27B')
+        self.assertTrue(generate.call_args.kwargs['json_output'])
+
+    def test_json_allows_a_complete_markdown_fence_but_does_not_repair_truncated_data(self):
+        client = load('client_under_test', 'llm/client.py')
+        schema = {'type': 'object'}
+        with patch.object(client, 'complete', new_callable=AsyncMock) as complete:
+            complete.return_value = '```json\n{"summary":"保存できます"}\n```'
+            self.assertEqual(asyncio.run(client.complete_json('質問', schema)), {'summary': '保存できます'})
+            complete.return_value = '{"summary": "途中'
+            with self.assertRaisesRegex(RuntimeError, r'line=1, column=\d+, position=\d+, output_chars='):
+                asyncio.run(client.complete_json('質問', schema))
+
+    def test_json_generation_has_a_separate_output_limit_and_no_sampling(self):
+        local = load('qwen_under_test', 'llm/local_qwen.py')
+        local._model = MagicMock()
+        local._model_id = 'test/model'
+        local._processor = MagicMock()
+        local._processor.apply_chat_template.return_value.to.return_value.__getitem__.return_value.shape = (1, 3)
+        local._model.generate.return_value = [[1, 2, 3, 4]]
+        local._processor.decode.return_value = '{}'
+        with patch.dict(sys.modules, {'torch': MagicMock(), 'transformers': MagicMock()}):
+            self.assertEqual(local.generate('要約', 'test/model', json_output=True), '{}')
+            generation = local._model.generate.call_args.kwargs
+            self.assertEqual(generation['max_new_tokens'], 4096)
+            self.assertFalse(generation['do_sample'])
+            self.assertNotIn('temperature', generation)
+            local.generate('質問', 'test/model')
+            self.assertEqual(local._model.generate.call_args.kwargs['max_new_tokens'], 2048)
+            self.assertTrue(local._model.generate.call_args.kwargs['do_sample'])
+
+    def test_generation_reports_a_reached_output_limit(self):
+        local = load('qwen_under_test', 'llm/local_qwen.py')
+        local._model = MagicMock()
+        local._model_id = 'test/model'
+        local._processor = MagicMock()
+        local._processor.apply_chat_template.return_value.to.return_value.__getitem__.return_value.shape = (1, 3)
+        local._model.generate.return_value = [[1, 2, 3, 4, 5]]
+        local._processor.decode.return_value = '{'
+        with patch.dict(sys.modules, {'torch': MagicMock(), 'transformers': MagicMock()}), \
+             patch.dict(os.environ, {'LOCAL_LLM_JSON_MAX_NEW_TOKENS': '2'}), \
+             self.assertLogs('audiointerview', level='WARNING') as logs:
+            local.generate('要約', 'test/model', json_output=True)
+        self.assertIn('max_new_tokens=2', logs.output[0])
+        self.assertIn('json_output=True', logs.output[0])
 
     def test_cuda_is_required_for_gpu_configuration(self):
         local = load('qwen_under_test', 'llm/local_qwen.py')

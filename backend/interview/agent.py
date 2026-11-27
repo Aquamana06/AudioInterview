@@ -11,6 +11,7 @@ CONFIG = load_config("interview")
 INTERVIEWER_STANCE = (
     "その業務を教わるトレーニーの姿勢で、知ったふりをせず相手の話を聞いてください。"
     "用語や前提の確認は、対象業務と今の質問方針を理解するために必要な範囲で行ってください。"
+    "最終目標は，現場の皆さんの日常においてうまく行くようにしている調整を明らかにすること，そして現場の安全管理に役立てることです"
 )
 
 
@@ -31,7 +32,7 @@ ARRAY_FIELDS = (
     "fram_input fram_precondition fram_resource fram_control fram_time fram_output "
     "situations practices reasons values sources personal_meanings irregular_situations "
     "irregular_responses irregular_reasons irregular_deeper_reasons persona_notes emotions user_questions signs_of_friction "
-    "signs_of_resistance"
+    "signs_of_resistance unanswered_points"
 ).split()
 DEPTH_FIELDS = ("reasons", "sources", "values", "personal_meanings")
 EXTRACT_ARRAY_FIELDS = tuple(field for field in ARRAY_FIELDS if field not in DEPTH_FIELDS)
@@ -68,12 +69,20 @@ FRAM_FIELDS = {
 }
 FRAM_MEANINGS = {
     "input": "作業を始めるきっかけ、状態",
-    "precondition": "作業を始める前に満たされている必要がある前提",
+    "precondition": "作業を始める前に満たされている必要がある前提条件。事前の行動・確認、開始の判断、他の業務や他者への依存、開始を妨げる事情を手掛かりにする",
     "resource": "作業遂行に必要な資源(防具，設備・人員・知識・情報・経験などの)",
     "control": "作業の進め方を定める手順書・監督・計画など",
     "time": "作業の時期・間隔・期限などの時間的な条件や制約",
     "output": "作業によって得られる結果・完了と判断できる状態",
 }
+PRECONDITION_QUESTIONS = (
+    ("事前の行動", "{work}に取りかかる前に、普段どのようなことをしていますか？"),
+    ("事前の確認", "{work}を始める前に、何か確認していることはありますか？"),
+    ("開始の判断", "何をもって、{work}に取りかかってよいと判断していますか？"),
+    ("他の業務への依存", "{work}では、他の業務が終わるのを待ってから取りかかることはありますか？"),
+    ("他者への依存", "{work}では、誰かの対応や確認を待ってから取りかかることはありますか？"),
+    ("開始の阻害", "{work}をやろうと思っても、すぐに取りかかれないことはありますか？"),
+)
 IRREGULAR_FACT_PREFIXES = {
     "irregular_situations": "イレギュラーな状況: ",
     "irregular_responses": "イレギュラー時の対応: ",
@@ -88,11 +97,13 @@ def initial_state() -> dict[str, Any]:
         "task_coverage_by_fram": {key: 0 for key in FRAM_FIELDS},
         "practice_covered": False, "task_depth": 0, "high_depth_turn_count": 0,
         "irregular_coverage": 0, "rapport": 0, "known_facts": [], "asked_points": [],
+        "irregular_partial_turn_count": 0,
         "irregular_evidence": {key: [] for key in IRREGULAR_FACT_PREFIXES},
         "persona_notes": [], "consecutive_questions": 0, "turns_since_reflection": 0,
         "friction_count": 0, "resistance_count": 0, "turn_count": 0,
         "deep_dive": None,
         "task_revisit_work": None,
+        "unanswered_points": [],
     }
 
 
@@ -111,14 +122,72 @@ def _history_text(history: list[dict]) -> str:
     return "\n".join(f"{item['role']}: {item['content']}" for item in selected)
 
 
-def _fallback_extraction(text: str) -> dict[str, Any]:
+UNANSWERED_INSTRUCTION = (
+    "unanswered_pointsには、直前の質問に対して『分からない』『そこまで考えていない』"
+    "『答えたくない』とされた点を、何についての話か分かる短い文で記録します。"
+    "話題全体ではなく答えられなかった点だけに限定し、該当しなければ空配列にします。"
+    "『分からないときは資料を確認する』のような対処の説明や、引用・仮定は対象外です。"
+    "分からないだけではsigns_of_resistanceにしません。"
+)
+
+
+def unanswered_points(info: dict, user_input: str, history: list[dict]) -> list[str]:
+    points = [point.strip()[:200] for point in info.get("unanswered_points", []) if isinstance(point, str) and point.strip()]
+    direct = re.search(
+        r"(?<![「『\"“])(?:わかんない|分かんない|(?:分|わ)からない|(?:分|わ)かりません|"
+        r"考えて(?:い)?(?:ない|ません)|考えたこと(?:は|が|も)?(?:ない|ありません)|"
+        r"答えたくない|言いたくない|話したくない)(?!とき|時|場合|人|こと|わけ|[」』\"”])"
+        r"|\bI (?:don't|do not) know\b|\bI (?:haven't|have not) thought about\b",
+        user_input, re.I,
+    )
+    if not points and (info.get("signs_of_resistance") or direct):
+        points = [next((item["content"] for item in reversed(history)
+                        if item["role"] == "system" and not item.get("context")), "直前に尋ねた点")]
+    return list(dict.fromkeys(points))[:1]
+
+
+def unanswered_context(state: dict) -> str:
+    return ("【このセッションで回答が得られず、追及しない点】\n"
+            + json.dumps(state.get("unanswered_points", []), ensure_ascii=False)
+            + "\nここにある点を、言い換えて聞き直したり、理由を追及したりしないでください。"
+            "coverageやdepthの不足よりこの制約を優先し、別の場面・行動・観点へ進んでください。"
+            "話題全体を禁止するものではありません。本人が自分からその点について話し始めたら、その発言は受け止めてください。")
+
+
+def alternate_question(state: dict, language: str) -> str:
+    candidates = {
+        "ja": ["そのあと、どのような作業をされましたか？", "その作業は、どなたと一緒に進めましたか？",
+               "そのとき、現場はどのような状況でしたか？", "ほかに、今日担当されたお仕事について教えていただけますか？"],
+        "en": ["What did you do next?", "Who did you work with on that task?", "What was happening at the workplace then?"],
+        "de": ["Was haben Sie danach gemacht?", "Mit wem haben Sie bei dieser Aufgabe zusammengearbeitet?", "Wie war die Situation vor Ort?"],
+    }[language]
+    previous = state.get("unanswered_points", []) + state.get("asked_points", [])
+    return next((question for question in candidates if not any(question in point for point in previous)),
+                {"ja": "ほかにお話しできることがあれば、お聞かせください。", "en": "Please share anything else you would like to tell me.",
+                 "de": "Erzählen Sie mir gerne noch etwas, das Sie mitteilen möchten."}[language])
+
+
+def repeats_unanswered_point(response: str, state: dict) -> bool:
+    def normalize(text: str) -> str:
+        return re.sub(r"[\s？?。.!！「」\"']", "", text)
+    return any(normalize(point) and normalize(point) in normalize(response) for point in state.get("unanswered_points", []))
+
+
+def turn_limit_reached(state: dict) -> bool:
+    return state.get("turn_count", 0) >= CONFIG["ending"]["max_turns"]
+
+
+def _fallback_extraction(text: str, history: list[dict] | None = None) -> dict[str, Any]:
     info = empty_extraction()
+    info["wants_to_stop"] = bool(re.search(r"終了|終わり|やめ|stop|quit|end|beenden", text, re.I))
+    info["unanswered_points"] = unanswered_points(info, text, history or [])
+    if info["unanswered_points"]:
+        return info
     info["usual_work"] = bool(re.search(r"いつも[通ど]お?り|普段[通ど]お?り|変わり(?:ない|ません)|変わったこと(?:は)?ない|as usual|nothing (?:unusual|different)|wie immer|wie üblich", text, re.I))
     if len(text) > 4 and not info["usual_work"]:
         info["target_work"] = text[:80]
     if len(text) > 8:
         info["practices"] = [text[:160]]
-    info["wants_to_stop"] = bool(re.search(r"終了|終わり|やめ|stop|quit|end|beenden", text, re.I))
     return info
 
 
@@ -149,10 +218,11 @@ def _normalize_depth_extraction(result: dict) -> dict[str, Any]:
 
 async def extract_turn(user_input: str, state: dict, history: list[dict]) -> dict[str, Any]:
     if not configured():
-        return _fallback_extraction(user_input)
+        return _fallback_extraction(user_input, history)
     prompt = f"""あなたは半構造化インタビューの情報抽出器です。直前のインタビュイ発話だけから、明示された情報を抽出してください。FRAM・状況・実践などは独立して抽出できますが、深さ判定の4分類には以下の排他ルールを適用してください。「うん」という相槌や「特にない」も発言として扱いますが、それだけで理由や価値観を推測して補いません。
 FRAMの各項目の意味: {json.dumps(FRAM_MEANINGS, ensure_ascii=False)}
 resourceは上記の定義に沿って抽出し、ミルクなどの材料を挙げただけの回答はfram_resourceに抽出しないでください。今回の作業に役立てた実践的な経験はresourceとして、本人が説明したつながりに沿って区別してください。
+preconditionは、開始に必要な事前の行動・確認の完了、開始してよいという判断の条件、前工程や他者の対応待ち、開始を妨げる事情からも抽出してください。単に直前にしていた無関係な行動を前提条件にせず、本人が説明した業務開始とのつながりだけを記録します。
 【深さ判定の排他ルール】
 reasons・sources・values・personal_meaningsを別々に列挙せず、回答全体の主な説明がどの分類まで明示しているかを判断し、depth_classification.categoryを次の4つから最大1つ選んでください。根拠となる今回の発言内容だけをdepth_classification.factsに記録します。該当する情報がなければcategory=null、facts=[]です。複数の分類を同時に選んだり、同じ説明を理由と価値観などへ重複して抽出したりしないでください。
 reasons（深さ3）: 実践に直接結びつく目的・必要性・重要性・手順上の理由。「必要だから」「重要だから」「手順だから」「安全のため」「異常を見逃さないため」という説明は、本人固有の価値観や具体的な源泉を明示していなければここです。
@@ -171,6 +241,7 @@ personal_meanings（深さ6）: 具体的な個人的経験や背景が、現在
 回答が『今回も2時間おきです』『その手順で進めました』等と具体的に説明している場合や、『その点は前と同じです』の参照先が一つの事実に明確に特定できる場合は、その内容を今回確認された情報として対応するFRAM項目に抽出できます。『今回も2時間おきでしたか？』のように一つの具体的な事実を確認する直前の質問への明確な肯定も、その一点の確認として扱います。過去に記録があるだけの場合や、単なる相槌・曖昧な応答の場合には補完しません。確認していない他の条件や理由まで引き継がないでください。
 target_work は今回中心に扱う具体的な業務名です。冒頭の回答で何の業務をしていたかが分かったら記録します。既に対象業務が決まっている場合、比較対象・優先した別の仕事・作業の一部分が話題に出ただけで切り替えないでください。対象業務について新しい指定がなければ null とし、現在の対象業務を維持します。
 signs_of_resistance は、その話題への回答や追及を避けたいという明確な意思が示された場合だけ記録します。『決まっているから』『ルールだから』『そう思ったから』『必要だったから』という説明や、『分からない』だけでは抵抗と判定しません。signs_of_friction は聞き手の誤解・聞き方への訂正や不満を示す場合です。
+{UNANSWERED_INSTRUCTION}
 usual_work は、今回の対象業務が『いつも通り』『普段と変わらない』と明示された場合、または普段との違いを尋ねた直前の質問に対して『特になかった』と明確に答えた場合だけ true にします。単なる相槌は false です。これだけで過去の手順・時間・資源などが今回も同一だったと補完せず、個別に今回の確認が取れた事実だけをFRAMに抽出します。
 deep_dive_opportunity は、直前の回答に、業務上の選択・優先順位・必要性・重要性・状況に応じた工夫や調整を示す語句や追加情報があり、「なぜそうするのか」「何を手掛かりにそう判断するのか」という、まだ語られていない理由・判断基準・暗黙の前提を尋ねる余地があるときだけ true にしてください。単に詳しく説明できそうな名詞があるだけでは true にしません。理由や判断基準が既に会話で十分説明されている話題も false にします。暗黙知が存在すると断定したり、理由を推測して抽出したりしないでください。
 deep_dive_anchor には、その判断や調整を示す直前発話の短い原文を記録します。例えば「他のタスクの方が優先だから」は候補ですが、「他のタスク」という名詞だけに切り縮めないでください。候補がなければ null にします。
@@ -185,9 +256,11 @@ wants_to_stop は明確な終了意思だけ true です。
 """
     try:
         result = await complete_json(prompt, EXTRACT_SCHEMA)
-        return _normalize_depth_extraction(result)
+        info = _normalize_depth_extraction(result)
+        info["unanswered_points"] = unanswered_points(info, user_input, history)
+        return info
     except Exception:
-        return _fallback_extraction(user_input)
+        return _fallback_extraction(user_input, history)
 
 
 def _add_facts(state: dict, prefix: str, values: list[str]) -> None:
@@ -211,10 +284,15 @@ def _update_irregular_evidence(state: dict, info: dict) -> None:
             break
         completed += 1
     state["irregular_coverage"] = round(completed * CONFIG["scoring"]["irregular_stage_increment"], 2)
+    state["irregular_partial_turn_count"] = (
+        state.get("irregular_partial_turn_count", 0) + 1
+        if state["irregular_coverage"] == CONFIG["ending"]["partial_irregular_coverage"] else 0
+    )
 
 
 def update_state(state: dict, info: dict) -> dict:
     state["turn_count"] += 1
+    state["unanswered_points"] = list(dict.fromkeys([*state.get("unanswered_points", []), *info.get("unanswered_points", [])]))
     state.setdefault("task_coverage_by_fram", {key: 0 for key in FRAM_FIELDS})
     for key in FRAM_FIELDS:
         state["task_coverage_by_fram"].setdefault(key, 0)
@@ -249,7 +327,7 @@ def update_state(state: dict, info: dict) -> dict:
         state["resistance_count"] += 1
         state["rapport"] = max(0, state["rapport"] - CONFIG["scoring"]["resistance_penalty"])
         state["asked_points"].extend(info["signs_of_resistance"])
-    state["rapport"] = min(1, state["rapport"] + (CONFIG["scoring"]["information_rapport_increment"] if any(info.get(k) for k in ARRAY_FIELDS) else 0))
+    state["rapport"] = min(1, state["rapport"] + (CONFIG["scoring"]["information_rapport_increment"] if any(info.get(k) for k in ARRAY_FIELDS if k != "unanswered_points") else 0))
     facts = state["known_facts"]
     depth = 0 if not state["target_work"] else 1
     for prefix, depth_level in (
@@ -268,7 +346,14 @@ def update_state(state: dict, info: dict) -> dict:
 
 
 def should_end(state: dict) -> bool:
-    return bool(state["target_work"] and state["practice_covered"] and state["task_coverage"] >= CONFIG["ending"]["min_task_coverage"] and state["task_depth"] >= CONFIG["ending"]["high_depth"] and state["irregular_coverage"] >= CONFIG["ending"]["min_irregular_coverage"] and (
+    if turn_limit_reached(state):
+        return True
+    irregular_ready = (
+        state["irregular_coverage"] >= CONFIG["ending"]["min_irregular_coverage"]
+        or (state["irregular_coverage"] == CONFIG["ending"]["partial_irregular_coverage"]
+            and state.get("irregular_partial_turn_count", 0) >= CONFIG["ending"]["partial_irregular_turns"])
+    )
+    return bool(state["target_work"] and state["practice_covered"] and state["task_coverage"] >= CONFIG["ending"]["min_task_coverage"] and state["task_depth"] >= CONFIG["ending"]["high_depth"] and irregular_ready and (
         state["high_depth_turn_count"] >= CONFIG["ending"]["high_depth_turns"] or
         (state["task_coverage"] >= CONFIG["ending"]["complete_task_coverage"] and state["task_depth"] >= CONFIG["ending"]["complete_depth"] and state["irregular_coverage"] >= CONFIG["ending"]["complete_irregular_coverage"])
     ))
@@ -281,7 +366,7 @@ def _fram_question(state: dict, language: str) -> tuple[str, str]:
     questions = {
         "ja": {
             "input": f"{work}が必要になったのは、何がきっかけでしたか？",
-            "precondition": f"{work}を始めるには、現場がどんな状態になっている必要がありますか？",
+            "precondition": PRECONDITION_QUESTIONS[0][1].format(work=work),
             "resource": f"{work}では、どんな知識が必要でしたか？",
             "control": f"{work}の進め方は、何をもとに決めていますか？",
             "time": f"{work}は、いつまでに終える必要がありますか？",
@@ -289,7 +374,7 @@ def _fram_question(state: dict, language: str) -> tuple[str, str]:
         },
         "en": {
             "input": f"What happened that made {work} necessary?",
-            "precondition": f"What condition does the workplace need to be in before you can start {work}?",
+            "precondition": f"What do you usually do before starting {work}?",
             "resource": f"What knowledge did you need to carry out {work}?",
             "control": f"What do you base your way of carrying out {work} on?",
             "time": f"When does {work} need to be finished?",
@@ -297,7 +382,7 @@ def _fram_question(state: dict, language: str) -> tuple[str, str]:
         },
         "de": {
             "input": f"Was war der Anlass für {work}?",
-            "precondition": f"In welchem Zustand muss der Arbeitsplatz sein, bevor Sie mit {work} beginnen können?",
+            "precondition": f"Was machen Sie normalerweise, bevor Sie mit {work} beginnen?",
             "resource": f"Welches Wissen brauchten Sie für {work}?",
             "control": f"Woran orientieren Sie sich beim Vorgehen für {work}?",
             "time": f"Bis wann muss {work} abgeschlossen sein?",
@@ -411,7 +496,8 @@ def _revisit_opening(state: dict, previous_work: str | None, info: dict,
 
 async def run_interview_turn(state: dict, user_input: str, history: list[dict], language: str,
                              *, extracted: dict | None = None, task_memory: dict | None = None) -> dict:
-    info = extracted if extracted is not None else await extract_turn(user_input, state, history)
+    info = dict(extracted if extracted is not None else await extract_turn(user_input, state, history))
+    info["unanswered_points"] = unanswered_points(info, user_input, history)
     previous_work = state.get("target_work")
     task_memory = task_memory or {}
     current_session_id = task_memory.get("current_session_id")
@@ -422,6 +508,10 @@ async def run_interview_turn(state: dict, user_input: str, history: list[dict], 
     ]
     active = state.get("deep_dive")
     next_state = update_state(state, {**info, "target_work": None} if active else info)
+    if turn_limit_reached(next_state):
+        next_state["deep_dive"] = None
+        return {"text": ENDINGS[language], "state": next_state, "stateLabel": "end", "extracted": info,
+                "guide": {"should_end": True, "end_reason": "turn_limit"}}
     if active:
         # An example about a competing task must not replace the interview's main task.
         next_state["target_work"] = active["return_target_work"]
@@ -431,7 +521,7 @@ async def run_interview_turn(state: dict, user_input: str, history: list[dict], 
         and next_state["task_depth"] >= CONFIG["ending"]["high_depth"]
         and next_state["irregular_coverage"] < CONFIG["ending"]["min_irregular_coverage"]
     )
-    interrupted = bool(info.get("user_questions") or info.get("signs_of_resistance"))
+    interrupted = bool(info.get("user_questions") or info.get("signs_of_resistance") or info["unanswered_points"])
     revisit_guide, revisit_fallback = (None, None)
     if not interrupted and not active and not needs_irregular and not info.get("wants_to_stop"):
         revisit_guide, revisit_fallback = _revisit_opening(next_state, previous_work, info, past_sessions, language)
@@ -455,8 +545,10 @@ async def run_interview_turn(state: dict, user_input: str, history: list[dict], 
     depth_question = False
     if info.get("user_questions"):
         guide = "相手の質問に対して短く答え、必要なら答えやすい確認を一つする。質問の意図についてなどの質問じゃなく，あなたの1意見を聞かれているなら，素直に思ったことを想像で答える．"
-    elif info.get("signs_of_resistance"):
-        guide = "無理に深掘りせず、圧を下げて答えやすい形で会話を進める。"
+    elif info["unanswered_points"]:
+        guide = "無理に深掘りせず、同様の質問はそれ以降しないようにし，圧を下げて答えやすい形で会話を進める。"
+        guide += "今回答えられなかった点の言い換えや理由の追及はせず、別の場面・行動・観点を一つ尋ねる。"
+        question_fallback = alternate_question(next_state, language)
     elif revisit_guide:
         guide, question_fallback = revisit_guide, revisit_fallback
     elif dive_guide:
@@ -469,7 +561,13 @@ async def run_interview_turn(state: dict, user_input: str, history: list[dict], 
                  f" {fram_focus} についてを重点的に確認する。質問例: {question_fallback} "
                  "会話で分かっている具体的な作業や現場の言葉に合わせ、既に答えた内容は聞き直さない。"
                  "環境や設備の状態を推測で決めつけない。別の観点を付け足さない。また，ここでも，framの6要素については，きっかけはなんですかとか処理対象はとか知識や情報はとかそういうダイレクトな聞き方を絶対しないでください．対話履歴の文脈の中で，自然にそれらに関することを引き出すイメージです．")
-        if fram_focus == "resource":
+        if fram_focus == "precondition":
+            guide += (" preconditionを『現場がどんな状態になっている必要がありますか』のように抽象的には尋ねない。"
+                      "次の6つを切り口の候補とし、今回の会話に自然につながり、まだ確認していないものを一つだけ選ぶ。"
+                      "既に答えた点や追及しない点は避ける。一度に並べたり、この順に全項目を埋めるように聞いたりしない。\n"
+                      + "\n".join(f"{angle}: {question.format(work=next_state.get('target_work') or 'その作業')}"
+                                  for angle, question in PRECONDITION_QUESTIONS))
+        elif fram_focus == "resource":
             guide += (f" resourceは{FRAM_MEANINGS['resource']}。"
                       "今回の話と過去の情報を踏まえ、文脈に合う観点を一つだけ尋ね、材料の種類や一覧は尋ねない。")
     elif next_state["task_depth"] < CONFIG["ending"]["high_depth"]:
@@ -514,10 +612,11 @@ async def run_interview_turn(state: dict, user_input: str, history: list[dict], 
 
     language_name = {"ja": "日本語", "en": "English", "de": "Deutsch"}[language]
     focus_context = f"今回尋ねるFRAM項目: {fram_focus} = {FRAM_MEANINGS[fram_focus]}。" if fram_focus else ""
-    prompt = f"""あなたはインタビュアーの業務について教えてもらう，トレーナーの立場兼半構造化インタビューを行う自然な聞き手です。{language_name}で次の発話だけを作ってください。
+    prompt = f"""あなたはインタビュアーの業務について教えてもらう，トレーナーの立場兼半構造化インタビューを行う自然な聞き手です。最終的な目的は，safety-IIのレジリエンスエンジニアリングの文脈で，現場の皆さんの日常においてうまく行くようにしている調整を明らかにすること，そして現場の安全管理に役立てるために行っています．{language_name}で次の発話だけを作ってください。
 {INTERVIEWER_STANCE}
 {domain_knowledge_context(task_memory.get('domain_knowledge'))}
 短い1〜2文にし、質問は一度に一つ。監査や尋問のようにせず、相手の実際の仕事とその背景にある理由や仕事に関する価値観を理解してください。
+トレーニーとして，対象者の人はすごいんだ，日々難しい仕事をしていて，尊敬するべきものだ，という心づもり，姿勢でいてください．
 質問は原則として、今回の具体的な状況・行動・考え方を本人の言葉で説明できるオープンエンドな形にします。同じだったことや違いがあったことは決めつけないでください。
 一つの疑問文でも、尋ねる内容は一つに絞ります。「手順や必要な知識・経験」のように複数の抽象的な項目をまとめて尋ねないでください。
 対象業務の名前や会話に出た言葉を使って、その場面を思い出して答えられる短い質問にします。「改めて業務そのものについて」のような長い前置きは省きます。
@@ -532,6 +631,7 @@ framの6要素については，きっかけはなんですかとか処理対象
 {json.dumps([point.replace('過去の質問:', '今回の質問:', 1) for point in next_state['asked_points'][-CONFIG['history']['prompt_questions']:]], ensure_ascii=False)}
 【今回のセッション内の会話履歴。別セッションの記憶ではない】
 {_history_text(history)}
+{unanswered_context(next_state)}
 今回の履歴を振り返るときは『先ほど』と表現し、『以前のインタビューでは』と言い換えないでください。別セッションの根拠がないときは『以前〜と伺いましたが』という引用を作らないでください。
 直前の回答: {user_input}
 
@@ -547,6 +647,8 @@ framの6要素については，きっかけはなんですかとか処理対象
         response = dive_fallback or question_fallback or fallback_question(next_state, language)
         if info.get("signs_of_friction"):
             response = {"ja": "失礼しました。", "en": "Sorry about that. ", "de": "Entschuldigung. "}[language] + response
+    if repeats_unanswered_point(response, next_state):
+        response = alternate_question(next_state, language)
     is_question = "?" in response or "？" in response or (
         language == "ja" and bool(re.search(r"(?:か|教えてください)[。！!]?\s*$", response))
     )

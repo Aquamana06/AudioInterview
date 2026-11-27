@@ -2,7 +2,7 @@
 
 import argparse
 from contextlib import closing
-from datetime import datetime
+from datetime import date, datetime
 import json
 from pathlib import Path
 import secrets
@@ -29,6 +29,7 @@ def parser() -> argparse.ArgumentParser:
         selection.add_argument("--user-name", "--display-name", dest="user_name", help="現在の表示名（完全一致）")
         selection.add_argument("--session-id")
         command.add_argument("--status", choices=("running", "ended", "all"), default="ended" if name == "export" else None)
+        command.add_argument("--date", type=date.fromisoformat, help="開始日で絞り込み（日本時間、YYYY-MM-DD）")
         if name == "export":
             command.add_argument("--format", choices=("simple", "archive"), default="simple")
             command.add_argument("--include-audio", action="store_true")
@@ -88,8 +89,10 @@ def main(argv: list[str] | None = None) -> None:
                        (SELECT COUNT(*) FROM messages m WHERE m.session_id=s.id) AS message_count
                 FROM interview_sessions s JOIN interview_archives a ON a.session_id=s.id
                 WHERE (? IS NULL OR s.account_id=?) AND (? IS NULL OR s.id=?)
-                  AND (? IS NULL OR s.status=?) ORDER BY s.started_at, s.id
-            """, (account_id, account_id, args.session_id, args.session_id, status, status)).fetchall()
+                  AND (? IS NULL OR s.status=?)
+                  AND (? IS NULL OR date(s.started_at, '+9 hours')=?) ORDER BY s.started_at, s.id
+            """, (account_id, account_id, args.session_id, args.session_id, status, status,
+                  args.date.isoformat() if args.date else None, args.date.isoformat() if args.date else None)).fetchall()
             if args.command == "list":
                 print(json.dumps([dict(row) for row in rows], ensure_ascii=False, indent=2))
                 return

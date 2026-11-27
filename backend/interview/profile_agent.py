@@ -3,7 +3,9 @@ import re
 
 from config import load_config
 from llm.client import complete, complete_json, configured
-from interview.agent import ENDINGS, INTERVIEWER_STANCE, _history_text, domain_knowledge_context, empty_extraction
+from interview.agent import (ENDINGS, INTERVIEWER_STANCE, UNANSWERED_INSTRUCTION, _history_text,
+                             alternate_question, domain_knowledge_context, empty_extraction,
+                             repeats_unanswered_point, turn_limit_reached, unanswered_context, unanswered_points)
 
 
 CONFIG = load_config("interview")["profile"]
@@ -25,8 +27,9 @@ PROFILE_SCHEMA = {
     "properties": {
         **{field: {"type": "array", "items": {"type": "string"}} for field in PROFILE_FIELDS},
         "wants_to_stop": {"type": "boolean"},
+        "unanswered_points": {"type": "array", "items": {"type": "string"}},
     },
-    "required": [*PROFILE_FIELDS, "wants_to_stop"],
+    "required": [*PROFILE_FIELDS, "wants_to_stop", "unanswered_points"],
 }
 PROFILE_SCHEMA["properties"]["experience"]["description"] = (
     "現在の仕事を何年・何か月続けているか。本人が明示した期間、または経験年数を答えたくないという意思を記録する。"
@@ -80,6 +83,7 @@ async def run_profile_turn(state: dict, user_input: str, history: list[dict], la
     if configured():
         prompt = f"""初回の仕事プロフィール抽出器です。直前の発話から明示された内容だけを記録してください。推測しないこと。
 experienceには、今の仕事を続けている年数・月数を、数値と単位を含めて記録します（例: 「3年目」「半年」「2 years」）。経験年数について「答えたくない」「言いたくない」などと答えた場合も、その意思をexperienceに記録してください。職位や熟練度、以前の別の仕事の年数は含めません。経験年数への回答拒否だけでは面談全体の終了希望にはせず、wants_to_stopはfalseにします。本人が面談自体の終了も希望している場合だけtrueにします。
+{UNANSWERED_INSTRUCTION}
 保存済みプロフィール: {json.dumps(known_profile, ensure_ascii=False)}
 会話履歴: {_history_text(history)}
 直前の回答: {user_input}"""
@@ -92,6 +96,10 @@ experienceには、今の仕事を続けている年数・月数を、数値と�
 
     state = {**state, "turn_count": state.get("turn_count", 0) + 1, "interview_mode": "profile",
              "persona_notes": list(state.get("persona_notes", []))}
+    points = unanswered_points(extracted, user_input, history)
+    state["unanswered_points"] = list(dict.fromkeys([*state.get("unanswered_points", []), *points]))
+    if any(re.search(r"年目|経験年数|how many years|wie vielen Jahren", point, re.I) for point in points):
+        state["profile_experience_asked"] = True
     for key in PROFILE_FIELDS:
         state["persona_notes"].extend(f"初回プロフィール/{key}: {item}" for item in extracted.get(key, []))
     if any(EXPERIENCE_REFUSAL.search(item) for item in extracted.get("experience", [])):
@@ -99,7 +107,7 @@ experienceには、今の仕事を続けている年数・月数を、数値と�
             state["persona_notes"].append(EXPERIENCE_DECLINED_NOTE)
     wants_to_stop = extracted.get("wants_to_stop", False) or bool(re.search(r"終了|終わり|やめ|\b(?:stop|quit|end|beenden)\b", user_input, re.I))
     state["profile_completed"] = not wants_to_stop and meets_completion_criteria(state)
-    should_end = wants_to_stop or state["turn_count"] >= CONFIG["max_turns"] or state["profile_completed"]
+    should_end = wants_to_stop or state["turn_count"] >= CONFIG["max_turns"] or turn_limit_reached(state) or state["profile_completed"]
     if should_end:
         state["profile_end_reason"] = "participant_stop" if wants_to_stop else "completed" if state["profile_completed"] else "turn_limit"
         return {"text": ENDINGS[language], "state": state, "stateLabel": "end",
@@ -119,6 +127,7 @@ experienceには、今の仕事を続けている年数・月数を、数値と�
 話しづらそうな話題は追わず、別の話しやすい話題に移ってください。評価や大げさな称賛はせず、相手の言葉に合わせて関心を示します。
 面談はおおむね{CONFIG['min_turns']}往復を目安とし、長くても{CONFIG['max_turns']}往復までです。現在、本人から{state['turn_count']}回の回答を受けています。残りの会話で全項目を無理に聞き切ろうとせず、短い会話で大まかな人物像をつかんでください。この発話では質問を一つ返し、終了の挨拶や次回の約束はしません。
 分かっているプロフィール: {json.dumps(state['persona_notes'], ensure_ascii=False)}
+{unanswered_context(state)}
 会話履歴: {_history_text(history)}
 直前の回答: {user_input}
 """
@@ -133,6 +142,8 @@ experienceには、今の仕事を続けている年数・月数を、数値と�
             text = ""
     if not text:
         text = OPENINGS[language]
+    if repeats_unanswered_point(text, state):
+        text = alternate_question(state, language)
     state["consecutive_questions"] = state.get("consecutive_questions", 0) + 1
     state["turns_since_reflection"] = state.get("turns_since_reflection", 0) + 1
     return {"text": text, "state": state, "stateLabel": "running",

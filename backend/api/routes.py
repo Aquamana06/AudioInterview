@@ -18,7 +18,7 @@ from db.memory import ensure_session_memory, finalize_session, get_session_memor
 from interview.agent import ENDINGS, extract_turn, initial_state, run_interview_turn
 from interview.diagnostics import log_event, log_turn, logger
 from interview.longitudinal import starter as longitudinal_starter
-from interview.profile_agent import run_profile_turn, starter as profile_starter
+from interview.profile_agent import EXPERIENCE_DECLINED_NOTE, run_profile_turn, starter as profile_starter
 from config import load_config
 from llm.client import status as llm_status
 from llm.terminology import prepare_text
@@ -93,9 +93,43 @@ def _stagnation(session_id: str) -> int:
         return int(row[0]) if row else 0
 
 
+def _interview_mode(state: dict, account_id: str) -> str:
+    # Keep the mode fixed when resuming or editing an existing interview.
+    if state.get("interview_mode") in ("profile", "interview"):
+        return state["interview_mode"]
+    if any(note.startswith("初回プロフィール/") for note in state.get("persona_notes", [])):
+        return "profile"
+    with database() as connection:
+        completed = connection.execute(
+            """SELECT 1 FROM interview_sessions s JOIN interview_states i ON i.session_id=s.id
+               WHERE s.account_id=? AND s.status='ended' AND i.state_label='end'
+                 AND json_extract(i.state_json, '$.interview_mode')='profile'
+                 AND json_extract(i.state_json, '$.profile_completed')=1 LIMIT 1""",
+            (account_id,),
+        ).fetchone()
+    return "interview" if completed else "profile"
+
+
+def _initial_interview_state(account_id: str, mode: str, *, exclude_session_id: str = "") -> dict:
+    state = {**initial_state(), "interview_mode": mode}
+    if mode == "profile":
+        # Respect an explicit refusal across attempts, even if summarization failed.
+        with database() as connection:
+            declined = connection.execute(
+                """SELECT 1 FROM interview_sessions s JOIN interview_states i ON i.session_id=s.id,
+                     json_each(i.state_json, '$.persona_notes') note
+                   WHERE s.account_id=? AND s.id!=? AND note.value=? LIMIT 1""",
+                (account_id, exclude_session_id, EXPERIENCE_DECLINED_NOTE),
+            ).fetchone()
+        if declined:
+            state["persona_notes"].append(EXPERIENCE_DECLINED_NOTE)
+    return state
+
+
 async def _run_turn(state: dict, content: str, history: list[dict], language: str, memory: dict, stalled: int = 0,
                     *, session_id: str = "") -> dict:
-    if memory["session_count"] == 0:
+    state = {**state, "interview_mode": _interview_mode(state, memory["account_id"])}
+    if state["interview_mode"] == "profile":
         return await run_profile_turn(state, content, history, language, memory["profile"],
                                       domain_knowledge=memory.get("domain_knowledge", []))
     # Identify the task from the current answer before retrieving past sessions.
@@ -206,6 +240,8 @@ async def _finalize_session_safe(session: dict) -> None:
 async def _replay_after_edit(session: dict, message_id: str, content: str) -> dict:
     with database() as connection:
         rows = list_messages(connection, session["id"])
+        saved = get_state(connection, session["id"])
+    mode = _interview_mode(saved["state"] if saved else initial_state(), session["account_id"])
     edit_index = next((i for i, row in enumerate(rows) if row["id"] == message_id and row["role"] == "user"), -1)
     if edit_index < 0:
         raise HTTPException(404, "Editable user message not found")
@@ -215,7 +251,7 @@ async def _replay_after_edit(session: dict, message_id: str, content: str) -> di
     with database() as connection:
         connection.execute("DELETE FROM messages WHERE session_id=?", (session["id"],))
         connection.execute("DELETE FROM interview_states WHERE session_id=?", (session["id"],))
-        state = initial_state()
+        state = _initial_interview_state(session["account_id"], mode, exclude_session_id=session["id"])
         if opening:
             insert_message(connection, session["id"], "system", opening["content"], "system", session["language"])
     memory = load_participant_profile(session["account_id"])
@@ -363,20 +399,21 @@ async def start_session(session_id: str, account: dict = Depends(require_account
     if not existing:
         _require_memory_complete(session["account_id"])
         memory = load_participant_profile(session["account_id"])
+        state = _initial_interview_state(session["account_id"], _interview_mode({}, session["account_id"]))
         opening = (
             await profile_starter(session["language"], domain_knowledge=memory.get("domain_knowledge", []))
-            if memory["session_count"] == 0
+            if state["interview_mode"] == "profile"
             else await longitudinal_starter(session["language"], memory["session_count"], memory["profile"],
                                             domain_knowledge=memory.get("domain_knowledge", []))
         )
         with database() as connection:
             insert_message(connection, session_id, "system", opening, "system", session["language"],
-                            {"stateSnapshot": initial_state()})
-            update_state(connection, session_id, initial_state(), "running")
+                            {"stateSnapshot": state})
+            update_state(connection, session_id, state, "running")
         _update_stagnation(session_id, 0)
         log_event("session_started", session_id,
-                  mode="profile" if memory["session_count"] == 0 else "interview",
-                  state=initial_state(), memory=memory, opening=opening)
+                  mode=state["interview_mode"],
+                  state=state, memory=memory, opening=opening)
     return _session_payload(session)
 
 
@@ -398,7 +435,10 @@ async def end_session(session_id: str, background_tasks: BackgroundTasks,
         with database() as connection:
             insert_message(connection, session_id, "system", ENDINGS[session["language"]], "system", session["language"])
             saved = get_state(connection, session_id)
-            update_state(connection, session_id, saved["state"] if saved else initial_state(), "end")
+            state = {**(saved["state"] if saved else initial_state()), "profile_completed": False}
+            if state.get("interview_mode") == "profile":
+                state["profile_end_reason"] = "manual"
+            update_state(connection, session_id, state, "end")
             stamp = now_iso()
             connection.execute(
                 "UPDATE interview_sessions SET status='ended', ended_at=?, updated_at=? WHERE id=?",
@@ -410,7 +450,7 @@ async def end_session(session_id: str, background_tasks: BackgroundTasks,
             messages = list_messages(connection, session_id)
         ensure_session_memory(session["account_id"], session_id, messages)
         log_event("session_ended", session_id, reason="manual",
-                  state=saved["state"] if saved else initial_state())
+                  state=state)
     else:
         await asyncio.to_thread(archive_session_safe, session_id)
     return _session_payload({**session, "status": "ended", "ended_at": now_iso()})

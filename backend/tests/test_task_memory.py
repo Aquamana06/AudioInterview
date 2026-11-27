@@ -54,7 +54,7 @@ class TaskMemoryTests(DatabaseTestCase):
         self.assertNotIn("recent_summaries", memory)
         self.assertNotIn("nodes", memory)
         extracted = {**empty_extraction(), "target_work": "ダスター交換"}
-        state = initial_state()
+        state = {**initial_state(), "interview_mode": "interview"}
         expected = "今回のダスター交換では、いつもと違うことはありましたか？"
         with patch("api.routes.extract_turn", AsyncMock(return_value=extracted)) as extract, \
              patch("interview.agent.extract_turn", AsyncMock(side_effect=AssertionError("duplicate extraction"))), \
@@ -146,7 +146,7 @@ class TaskMemoryTests(DatabaseTestCase):
     def test_short_followup_keeps_referencing_original_task(self):
         self.history("past", "ダスター交換", "次のシフトを考えて交換する")
         memory = load_participant_profile("admin")
-        state = initial_state()
+        state = {**initial_state(), "interview_mode": "interview"}
         state["target_work"] = "ダスター交換"
         with patch("api.routes.extract_turn", AsyncMock(return_value=empty_extraction())), \
              patch("interview.agent.configured", return_value=False), \
@@ -208,7 +208,7 @@ class TaskMemoryTests(DatabaseTestCase):
         with patch("api.routes.extract_turn", AsyncMock(return_value=empty_extraction())), \
              patch("api.routes.load_task_memory", side_effect=AssertionError("Task is still unknown")), \
              patch("interview.agent.configured", return_value=False):
-            result = asyncio.run(_run_turn(initial_state(), "えーと", [], "ja", participant, session_id="new"))
+            result = asyncio.run(_run_turn({**initial_state(), "interview_mode": "interview"}, "えーと", [], "ja", participant, session_id="new"))
         self.assertIsNone(result["state"]["target_work"])
 
     def test_task_name_normalization_does_not_match_a_different_replacement_task(self):

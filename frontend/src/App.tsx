@@ -17,8 +17,6 @@ type InterviewState = { task_coverage: number; task_depth: number; irregular_cov
 type SessionPayload = { session: Session; messages: Message[]; state: InterviewState; stateLabel: 'running' | 'end'; memory: { status: 'not_started' | 'pending' | 'ready' | 'fallback'; summary: string | null } }
 type SpeechState = 'ready' | 'wake' | 'recording' | 'transcribing' | 'thinking' | 'speaking' | 'ended' | 'error'
 
-type BarcodeDetectorLike = { detect(source: ImageBitmap): Promise<Array<{ rawValue: string }>> }
-
 const labels: Record<SpeechState, string> = {
   ready: 'Ready', wake: 'Waiting for the next question', recording: 'Recording', transcribing: 'サーバーで音声認識中',
   thinking: 'Interviewer thinking', speaking: 'Speaking', ended: 'Ended', error: 'Error',
@@ -32,50 +30,27 @@ function jsonInit(method: string, body?: unknown): RequestInit {
 }
 
 function Login({ onLogin }: { onLogin: (account: Account) => void }) {
-  const [mode, setMode] = useState<'id' | 'qr'>('id')
   const [id, setId] = useState('')
   const [password, setPassword] = useState('')
-  const [qrToken, setQrToken] = useState('')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
 
   async function submit(event: React.FormEvent) {
     event.preventDefault(); setBusy(true); setError('')
     try {
-      const result = await api<{ account: Account }>('/api/auth/login', jsonInit('POST', mode === 'id' ? { id, password } : { qrToken }))
+      const result = await api<{ account: Account }>('/api/auth/login', jsonInit('POST', { id, password }))
       onLogin(result.account)
     } catch (caught) { setError(caught instanceof Error ? caught.message : 'ログインできませんでした') }
     finally { setBusy(false) }
   }
 
-  async function scanQr(file: File) {
-    const win = window as typeof window & { BarcodeDetector?: new (options: { formats: string[] }) => BarcodeDetectorLike }
-    if (!win.BarcodeDetector) { setError('このブラウザは画像QR読取に未対応です。QRトークンを貼り付けてください。'); return }
-    try {
-      const bitmap = await createImageBitmap(file); const detector = new win.BarcodeDetector({ formats: ['qr_code'] }); const values = await detector.detect(bitmap)
-      if (!values[0]?.rawValue) throw new Error('QRコードを検出できませんでした')
-      setQrToken(values[0].rawValue); setError('')
-    } catch (caught) { setError(caught instanceof Error ? caught.message : 'QRコードを読めませんでした') }
-  }
-
   return <main className="login-page">
     <section className="login-card">
-      <div className="brand-mark">AI</div>
-      <h1>AudioInterview</h1>
-      <p className="muted">現場の経験と判断を、安全に聞き取るインタビューシステム</p>
-      <div className="tabs">
-        <button className={mode === 'id' ? 'active' : ''} onClick={() => setMode('id')}>IDでログイン</button>
-        <button className={mode === 'qr' ? 'active' : ''} onClick={() => setMode('qr')}>QRでログイン</button>
-      </div>
+      <div className="login-alpaca"><img src={alpacaBackground} alt="ヘルメットをかぶったアルパカのインタビュアー" /></div>
+      <h1>AIインタビュー</h1>
       <form onSubmit={submit}>
-        {mode === 'id' ? <>
-          <label>ユーザーID<input value={id} onChange={event => setId(event.target.value)} autoFocus placeholder="発行されたID" /></label>
-          <label>パスワード（管理者のみ）<input type="password" value={password} onChange={event => setPassword(event.target.value)} placeholder="operatorは入力不要" /></label>
-        </> : <>
-          <div className="qr-frame"><span>▦</span><p>管理者から発行されたQRの内容を読み取るか貼り付けてください</p></div>
-          <label>QR画像を読み取る<input type="file" accept="image/*" capture="environment" onChange={event => { const file = event.target.files?.[0]; if (file) void scanQr(file) }} /></label>
-          <label>QRログイントークン<input value={qrToken} onChange={event => setQrToken(event.target.value)} placeholder="audiointerview://login?id=..." /></label>
-        </>}
+        <label>ユーザーID<input value={id} onChange={event => setId(event.target.value)} autoFocus placeholder="発行されたID" /></label>
+        <label>パスワード（管理者のみ）<input type="password" value={password} onChange={event => setPassword(event.target.value)} placeholder="operatorは入力不要" /></label>
         {error && <p className="error-message">{error}</p>}
         <button className="primary wide" disabled={busy}>{busy ? '確認中…' : 'ログイン'}</button>
       </form>
@@ -627,7 +602,8 @@ function Interview({ sessionId, voiceStart, manualOpen, controls, onVoiceChange,
         if (event.key === 'Enter' && !event.shiftKey && !nativeEvent.isComposing && nativeEvent.keyCode !== 229) { event.preventDefault(); void sendText() }
       }} placeholder={payload.session.status === 'ended' ? 'このインタビューは終了しました' : '回答を入力（変換中はEnterで確定／確定後Enterで送信）'} disabled={payload.session.status === 'ended' || isBusy} />
       <div className="composer-actions minimal-actions">
-        <button className={`handsfree-button ${handsFree ? 'active' : ''}`} onClick={toggleHandsFree} disabled={payload.session.status === 'ended' || isBusy}>{handsFree ? (isRecording ? '録音中（停止して送信）' : '自動録音中（停止）') : '音声で回答する'}</button>
+        {isRecording && <span className="recording-indicator" role="status">録音中</span>}
+        <button className={`handsfree-button ${handsFree ? 'active' : ''}`} onClick={toggleHandsFree} disabled={payload.session.status === 'ended' || isBusy}>{handsFree ? (isRecording ? '停止して送信' : '自動録音中（停止）') : '音声で回答する'}</button>
         <button className="primary send" onClick={() => void sendText()} disabled={!text.trim() || payload.session.status === 'ended' || isBusy}>{isBusy ? '送信中…' : '送信'}</button>
       </div>
       {handsFree && <p className="voice-help">回答の最後に「どうぞ」または「オーバー」と話してください。</p>}

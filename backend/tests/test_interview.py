@@ -5,7 +5,7 @@ import unittest
 import backend_test_support  # Configure the import path and external inference boundary.
 from backend_test_support import irregular_evidence
 from interview.agent import ENDINGS, FRAM_MEANINGS, empty_extraction, initial_state, run_interview_turn, should_end, update_state
-from interview.profile_agent import run_profile_turn
+from interview.profile_agent import CONFIG as PROFILE_CONFIG, run_profile_turn
 
 
 class InterviewTests(unittest.TestCase):
@@ -406,19 +406,22 @@ class InterviewTests(unittest.TestCase):
             f"初回プロフィール/{field}: 回答済み"
             for field in ("role", "experience", "responsibilities", "collaborators", "personally_important_topics")
         ]
+        state["persona_notes"][1] = "初回プロフィール/experience: 3年目"
         with patch("interview.profile_agent.configured", return_value=False):
-            for answer in range(1, 8):
+            for answer in range(1, PROFILE_CONFIG["min_turns"] + 1):
                 result = asyncio.run(run_profile_turn(state, "回答", [], "ja", {}))
-                self.assertEqual(result["stateLabel"], "running" if answer < 7 else "end")
+                self.assertEqual(result["stateLabel"], "running" if answer < PROFILE_CONFIG["min_turns"] else "end")
                 state = result["state"]
+        self.assertTrue(result["state"]["profile_completed"])
 
     def test_profile_interview_has_turn_limit(self):
         state = initial_state()
-        state["turn_count"] = 6
+        state["turn_count"] = PROFILE_CONFIG["max_turns"] - 2
         with patch("interview.profile_agent.configured", return_value=False):
-            for answer in range(7, 10):
+            for answer in range(PROFILE_CONFIG["max_turns"] - 1, PROFILE_CONFIG["max_turns"] + 1):
                 result = asyncio.run(run_profile_turn(state, "回答", [], "ja", {}))
-                self.assertEqual(result["stateLabel"], "running" if answer < 9 else "end")
+                self.assertEqual(result["stateLabel"], "running" if answer < PROFILE_CONFIG["max_turns"] else "end")
                 state = result["state"]
         self.assertEqual(result["stateLabel"], "end")
-        self.assertEqual(result["state"]["turn_count"], 9)
+        self.assertEqual(result["state"]["turn_count"], PROFILE_CONFIG["max_turns"])
+        self.assertFalse(result["state"]["profile_completed"])

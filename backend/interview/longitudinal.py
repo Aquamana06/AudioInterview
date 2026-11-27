@@ -45,9 +45,14 @@ async def starter(language: str, session_count: int, profile: dict, recent_start
     if not configured():
         return fallback
     language_name = {"ja": "日本語", "en": "English", "de": "Deutsch"}[language]
-    prompt = f"""反復型インタビューの開始発話を{language_name}で一文だけ作ってください。{INTERVIEWER_STANCE}
+    prompt = f"""帯同インタビューの開始発話を{language_name}で短く1〜2文だけ作ってください。{INTERVIEWER_STANCE}
 {domain_knowledge_context(domain_knowledge)}
-参加者が「先ほどしていた具体的な業務」を話し始められる短い質問にします。過去の価値観は持ち出さず、今日の経験を起点にします。分析用語や挨拶は不要です。最近の開始発話: {json.dumps(recent_starters, ensure_ascii=False)}"""
+参加者は業務の合間のキリがよいタイミングで、自分で開始ボタンを押しています。
+毎回、開始ボタンを押す直前までどんな業務をしていたかを尋ねてください。「今はどんなことをしていましたか？」「直前まで、どんな業務をされていましたか？」のように、業務内容を決めつけない開かれた質問を一つだけします。
+過去の会話や上記のドメイン知識から、今回も同じ業務をしていたと推測したり、具体的な業務名や作業の候補を質問に入れたりしないでください。「今日の業務」「印象に残った作業」など、一日全体の振り返りや印象を尋ねる質問にはしません。過去の価値観や分析用語も持ち出しません。
+質問の前に、参加への短いお礼や労いを自然に添えても構いません。毎回同じ挨拶にならないよう、添えない回も含めて言い回しを変えてください。初回は再参加を前提にせず、2回目以降は「またインタビューを受けてくださってありがとうございます」のようなお礼も使えます。ただ，xx回目のご参加ありがとうみたいな具体的な数字はわざわざ出さないでいい．そもそも参加してくれて，じゃなくてインタビューを受けてくださってありがとう，のニュアンスだよ．
+これまでのセッション数: {session_count}。開始発話全体を{CONFIG["starter_max_chars"]}文字以内にしてください。
+最近の開始発話（言い回しの重複を避けるためだけに参照）: {json.dumps(recent_starters, ensure_ascii=False)}"""
     try:
         text = (await complete(prompt)).strip().strip("「」\"'")
         if text and text not in recent_starters and len(text) <= CONFIG["starter_max_chars"]:

@@ -44,15 +44,22 @@ export function OperationManual({ firstTime, saving, error, onClose }: {
       </header>
       <div className="manual-body">
         <p id="manual-introduction" className="manual-introduction">{manualContent.introduction}</p>
-        <ul className="manual-highlights">{manualContent.highlights.map(item => <li key={item.title}>
-          <strong>{item.title}</strong><span>{item.text}</span>
-        </li>)}</ul>
-        <ol className="manual-steps">{manualContent.steps.map((step, index) => <li key={step.title}>
-          <h2><span>{index + 1}</span>{step.title}</h2>
-          <p className="manual-step-key">{step.keyPoint}</p>
-          <a href={step.image} target="_blank" rel="noreferrer" aria-label={`手順${index + 1}の画面を拡大する`}><img src={step.image} alt={step.alt} width="430" height="860" /></a>
-          <p>{step.text}</p><p className="manual-note">{step.note}</p>
-        </li>)}</ol>
+        <section className="manual-preparation" aria-labelledby="manual-preparation-title">
+          <h2 id="manual-preparation-title">{manualContent.preparation.title}</h2>
+          <p>{manualContent.preparation.browser}</p>
+          <a href={manualContent.preparation.image} target="_blank" rel="noreferrer" aria-label="ログイン画面を拡大する"><img src={manualContent.preparation.image} alt={manualContent.preparation.imageAlt} /></a>
+          <ol>{manualContent.preparation.instructions.map(instruction => <li key={instruction}>{instruction}</li>)}</ol>
+          <p className="manual-note">{manualContent.preparation.note}</p>
+        </section>
+        {manualContent.patterns.map(pattern => <section className="manual-pattern" key={pattern.id} aria-labelledby={`manual-pattern-${pattern.id}`}>
+          <h2 id={`manual-pattern-${pattern.id}`}>{pattern.title}</h2>
+          <ol className="manual-steps">{pattern.steps.map((step, index) => <li key={step.title}>
+            <h3><span>{index + 1}</span>{step.title}</h3>
+            <p className="manual-step-key">{step.keyPoint}</p>
+            <a href={step.image} target="_blank" rel="noreferrer" aria-label={`${pattern.title}：手順${index + 1}の画面を拡大する`}><img src={step.image} alt={step.alt} width="430" height="860" /></a>
+            <p>{step.text}</p>
+          </li>)}</ol>
+        </section>)}
         <section className="manual-repeat" aria-labelledby="manual-repeat-title">
           <h2 id="manual-repeat-title">{manualContent.repeat.title}</h2>
           {manualContent.repeat.image && <img className="manual-work-illustration" src={manualContent.repeat.image} alt={manualContent.repeat.imageAlt} />}

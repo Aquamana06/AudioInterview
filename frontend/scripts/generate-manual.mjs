@@ -102,6 +102,13 @@ try {
   async function capture(name, target) {
     const locator = page.locator(target)
     await locator.waitFor({ state: 'visible' })
+    const send = page.locator('.composer-actions .send')
+    if (await send.count()) {
+      const actionsBox = await page.locator('.composer-actions').boundingBox()
+      const sendBox = await send.boundingBox()
+      assert.ok(sendBox.width < actionsBox.width / 2, 'send must remain a compact button')
+      assert.ok(Math.abs(sendBox.x + sendBox.width - actionsBox.x - actionsBox.width) < 1, 'send must align to the right')
+    }
     await page.locator('.interview-layout').screenshot({ path: path.join(output, name) })
   }
   await page.goto(origin)
@@ -116,8 +123,12 @@ try {
   await capture('start.png', '.composer')
   await page.getByRole('button', { name: 'インタビューを開始', exact: true }).click()
   await page.waitForFunction(() => document.querySelector('.assistant-bubble p')?.textContent === '直前まで、どのようなお仕事をしていましたか？')
+  await page.locator('.handsfree-button').screenshot({ path: path.join(output, 'voice-button.png') })
   await page.locator('.handsfree-button').click()
   await page.waitForFunction(() => window.__manualRecorders[0]?.state === 'recording')
+  assert.equal(await page.locator('.recording-indicator').textContent(), '録音中')
+  assert.equal(await page.locator('.handsfree-button').textContent(), '停止して送信')
+  assert.ok(await page.locator('.handsfree-button').evaluate(button => parseFloat(getComputedStyle(button).borderTopWidth) > 0), 'stop and send must have a visible button border')
   await capture('voice.png', '.composer')
   // Verify the real browser keeps the same MediaRecorder and interview mounted.
   await page.locator('.interview-utilities .manual-trigger').click()
@@ -151,16 +162,21 @@ try {
   assert.equal(await page.locator('.manual-dialog').count(), 0)
 
   // Use the same text in the site and PDF, with full-screen captures on print pages.
-  const pdfPage = await browser.newPage()
+  const pdfPage = await browser.newPage({ viewport: { width: 688, height: 1024 } })
   await pdfPage.setContent(await manualDocument(output))
   await pdfPage.evaluate(() => document.fonts.ready)
+  await pdfPage.emulateMedia({ media: 'print' })
+  const printHeights = await pdfPage.locator('.print-page').evaluateAll(pages => pages.map(page => page.getBoundingClientRect().height))
+  assert.ok(printHeights.every(height => height <= 1024), `A4 pages must not overflow: ${printHeights.join(', ')}`)
   const pdfPath = path.join(output, 'interview-manual.pdf')
   await pdfPage.pdf({ path: pdfPath, format: 'A4', printBackground: true, preferCSSPageSize: true, tagged: true })
   await pdfPage.screenshot({ path: path.join(documentation, 'pdf-preview.png'), fullPage: true })
   await writeFile(path.join(documentation, 'manual-text.md'), [
     `# ${manualContent.title}`, '', manualContent.introduction, '',
-    ...manualContent.highlights.flatMap(item => [`**${item.title}**：${item.text}`, '']),
-    ...manualContent.steps.flatMap((step, index) => [`## ${index + 1}. ${step.title}`, '', `**${step.keyPoint}**`, '', step.text, '', step.note, '']),
+    `## ${manualContent.preparation.title}`, '', manualContent.preparation.browser, '',
+    ...manualContent.preparation.instructions.map((instruction, index) => `${index + 1}. ${instruction}`), '', manualContent.preparation.note, '',
+    ...manualContent.patterns.flatMap(pattern => [`## ${pattern.title}`, '',
+      ...pattern.steps.flatMap((step, index) => [`### ${index + 1}. ${step.title}`, '', `**${step.keyPoint}**`, '', step.text, '', ...(step.note ? [step.note, ''] : [])])]),
     `## ${manualContent.repeat.title}`, '', manualContent.repeat.text, '', manualContent.repeat.callout, '', manualContent.repeat.availability, '',
     '## こんなときは？', '',
     ...manualContent.questions.flatMap(item => [`### ${item.question}`, '', item.answer, '', ...item.instructions.map((instruction, index) => `${index + 1}. ${instruction}`), '', item.note, '']),
@@ -170,7 +186,13 @@ try {
   // Refresh assets in the existing page, then inspect the modal at both sizes.
   await page.locator('.interview-utilities .manual-trigger').click()
   await page.locator('.manual-dialog img').evaluateAll(images => Promise.all(images.map(image => image.decode())))
-  assert.equal(await page.locator('.manual-steps img').count(), 4)
+  assert.deepEqual(await page.locator('.manual-questions > h2').allTextContents(), ['こんなときは？'])
+  assert.deepEqual(await page.locator('.manual-questions summary').allTextContents(), manualContent.questions.map(item => item.question))
+  assert.equal(await page.locator('.manual-pattern').count(), manualContent.patterns.length)
+  for (const [index, pattern] of (await page.locator('.manual-pattern').all()).entries()) {
+    assert.deepEqual(await pattern.locator('.manual-steps h3').allTextContents(), manualContent.patterns[index].steps.map((step, stepIndex) => `${stepIndex + 1}${step.title}`))
+  }
+  assert.equal(await page.locator('.manual-steps a img').count(), manualContent.patterns.reduce((count, pattern) => count + pattern.steps.length, 0))
   await page.screenshot({ path: path.join(documentation, 'mobile-preview.png') })
   await page.setViewportSize({ width: 1280, height: 900 })
   await page.screenshot({ path: path.join(documentation, 'site-preview.png') })

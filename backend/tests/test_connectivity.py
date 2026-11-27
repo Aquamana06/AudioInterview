@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 from backend_test_support import DatabaseTestCase, app
 from db.memory import load_participant_memory
 from interview.agent import _history_text, empty_extraction
-from interview.profile_agent import PROFILE_FIELDS
+from interview.profile_agent import CONFIG as PROFILE_CONFIG, PROFILE_FIELDS
 
 
 def model_response(prompt, model_id):
@@ -20,7 +20,10 @@ def model_response(prompt, model_id):
             'edges': [],
         }, ensure_ascii=False)
     if '"position_or_seniority"' in prompt:
-        return json.dumps({**{key: [] for key in PROFILE_FIELDS}, 'role': ['設備担当'], 'wants_to_stop': False}, ensure_ascii=False)
+        return json.dumps({**{key: [] for key in PROFILE_FIELDS}, 'role': ['設備担当'],
+                           'experience': ['3年目'], 'responsibilities': ['設備点検'],
+                           'typical_day': ['巡回'], 'collaborators': ['同じ班の担当者'],
+                           'wants_to_stop': False}, ensure_ascii=False)
     if '半構造化インタビューの情報抽出器' in prompt:
         return json.dumps({**empty_extraction(), 'target_work': '設備 点検', 'practices': ['温度を確認'],
                            'fram_input': ['設備'], 'reasons': ['安全のため']}, ensure_ascii=False)
@@ -54,7 +57,11 @@ class ConnectivityTests(DatabaseTestCase):
         self.assertEqual(result['state']['turn_count'], 1)
         self.assertIn('初回プロフィール/role: 設備担当', result['state']['persona_notes'])
         self.assertEqual(result['messages'][1]['inputMode'], 'voice')
-        ended = self.request('POST', f'/sessions/{first}/end')
+        for _ in range(PROFILE_CONFIG['min_turns'] - 1):
+            result = self.request('POST', f'/sessions/{first}/messages', json={'maskedText': '3年目です。設備点検と巡回を班の同僚と担当しています。'})
+        ended = result
+        self.assertEqual(ended['session']['status'], 'ended')
+        self.assertTrue(ended['state']['profile_completed'])
         self.assertIsNotNone(ended['memory']['summary'])
         self.assertEqual(self.request('GET', f'/sessions/{first}')['memory']['status'], 'ready')
         memory = load_participant_memory(issued['id'])

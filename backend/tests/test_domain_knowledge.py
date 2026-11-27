@@ -78,7 +78,7 @@ class DomainKnowledgeTests(DatabaseTestCase):
         with TestClient(app) as client:
             client.post("/api/auth/login", json={"id": "admin", "password": "admin"})
             session_id = client.post("/api/sessions", json={}).json()["session"]["id"]
-            with patch("api.routes.longitudinal_starter", AsyncMock(return_value="先ほどは何をしていましたか？")) as starter, \
+            with patch("api.routes.profile_starter", AsyncMock(return_value="普段はどんなお仕事ですか？")) as starter, \
                  patch("api.routes.load_task_memory", side_effect=AssertionError("No task yet")), \
                  patch("db.memory.load_participant_memory", side_effect=AssertionError("Do not load past conversations")):
                 response = client.post(f"/api/sessions/{session_id}/start")
@@ -93,7 +93,7 @@ class DomainKnowledgeTests(DatabaseTestCase):
         for target, coverage, depth in phases:
             with self.subTest(target=target, depth=depth):
                 state = initial_state()
-                state.update(target_work=target, task_coverage=coverage, task_depth=depth)
+                state.update(target_work=target, task_coverage=coverage, task_depth=depth, interview_mode="interview")
                 if coverage:
                     state["task_coverage_by_fram"] = {key: 0.05 for key in state["task_coverage_by_fram"]}
                     scoring = load_config("interview")["scoring"]

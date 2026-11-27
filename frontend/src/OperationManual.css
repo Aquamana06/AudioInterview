@@ -9,15 +9,14 @@
 .manual-close { flex-shrink: 0; padding: 8px 12px; border: 1px solid #c7d6ce; border-radius: 8px; color: #355c4f; background: #fff; font-size: 12px; }
 .manual-body { overflow-y: auto; overscroll-behavior: contain; padding: 18px 26px; }
 .manual-introduction { margin: 0 0 20px; font-size: 14px; line-height: 1.8; }
-.manual-highlights { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin: 0 0 22px; padding: 0; list-style: none; }
-.manual-highlights li { padding: 14px; border: 1px solid #cbded2; border-radius: 10px; background: #edf5ef; }
-.manual-highlights strong { display: block; margin-bottom: 6px; color: #245d4e; font-size: 14px; }
-.manual-highlights span { display: block; color: #476356; font-size: 12px; line-height: 1.8; }
-.manual-steps { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 0; padding: 0; list-style: none; }
+.manual-pattern { margin-top: 24px; }
+.manual-pattern > h2 { margin: 0 0 14px; font-size: 19px; }
+.manual-steps { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin: 0; padding: 0; list-style: none; }
 .manual-steps li { padding: 16px; border: 1px solid #dfe6df; border-radius: 12px; background: #fff; }
-.manual-steps h2 { display: flex; align-items: center; gap: 9px; margin: 0 0 12px; font-size: 15px; }
-.manual-steps h2 span { display: grid; flex-shrink: 0; place-items: center; width: 25px; height: 25px; border-radius: 50%; color: #fff; background: #3d7d70; font-size: 13px; }
+.manual-steps h3 { display: flex; align-items: center; gap: 9px; margin: 0 0 12px; font-size: 15px; }
+.manual-steps h3 span { display: grid; flex-shrink: 0; place-items: center; width: 25px; height: 25px; border-radius: 50%; color: #fff; background: #3d7d70; font-size: 13px; }
 .manual-steps img { display: block; width: min(100%, 260px); height: auto; margin: 0 auto; border: 1px solid #e1e2d9; border-radius: 8px; background: #f5f2e9; }
+.manual-steps .manual-button-example { width: auto; max-width: 100%; margin-top: 12px; border: 0; border-radius: 0; }
 .manual-steps p { margin: 12px 0 0; font-size: 13px; line-height: 1.8; }
 .manual-steps .manual-step-key { margin: 0 0 13px; padding: 8px 10px; border-radius: 6px; color: #245d4e; background: #edf5ef; font-size: 13px; font-weight: 700; }
 .manual-steps .manual-note { margin-top: 7px; color: #5a6e65; font-size: 12px; }
@@ -28,6 +27,11 @@
 .manual-repeat .manual-repeat-cycle { padding: 12px; border-radius: 8px; color: #245d4e; background: #fff; font-weight: 700; }
 .manual-repeat .manual-note, .manual-questions .manual-note { color: #5a6e65; font-size: 12px; }
 .manual-questions { margin-top: 24px; }
+.manual-preparation { margin: 22px 0; padding: 18px; border: 1px solid #dfe6df; border-radius: 10px; background: #fff; font-size: 13px; line-height: 1.9; }
+.manual-preparation h2 { margin: 0 0 12px; font-size: 17px; }
+.manual-preparation img { display: block; width: min(100%, 300px); height: auto; margin: 16px auto; border: 1px solid #dfe6df; border-radius: 8px; }
+.manual-preparation li + li { margin-top: 9px; }
+.manual-preparation .manual-note { color: #5a6e65; font-size: 12px; }
 .manual-questions details { margin-top: 9px; padding: 14px 16px; border: 1px solid #dfe6df; border-radius: 9px; background: #fff; }
 .manual-questions summary { cursor: pointer; color: #315d50; font-size: 13px; font-weight: 700; line-height: 1.7; }
 .manual-questions li + li { margin-top: 6px; }
@@ -37,6 +41,9 @@
 .manual-footer > p { flex-basis: 100%; margin: 0; color: #a64236; font-size: 12px; }
 .manual-footer > button { margin-left: auto; padding: 10px 18px; border: 0; border-radius: 8px; }
 .manual-dialog :focus-visible, .manual-trigger:focus-visible { outline: 3px solid #72a997; outline-offset: 3px; }
+@media (max-width: 760px) {
+  .manual-steps { grid-template-columns: 1fr; }
+}
 @media (max-width: 600px) {
   .manual-backdrop { padding: 10px; }
   .manual-dialog { max-height: calc(100svh - 20px); border-radius: 14px; }
@@ -44,9 +51,6 @@
   .manual-header h1 { font-size: 19px; }
   .manual-body { padding: 15px 17px; }
   .manual-introduction { font-size: 13px; }
-  .manual-highlights { grid-template-columns: 1fr; gap: 7px; }
-  .manual-highlights li { padding: 11px 13px; }
-  .manual-highlights strong { margin-bottom: 2px; }
   .manual-steps { grid-template-columns: 1fr; gap: 12px; }
   .manual-steps li { padding: 14px; }
   .manual-footer { padding: 12px 17px; }
